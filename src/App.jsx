@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowDownToLine,
@@ -27,6 +27,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Tag,
+  Upload,
   Users,
   Wallet,
   X,
@@ -34,8 +35,13 @@ import {
 } from "lucide-react";
 
 const api = window.tuition;
+const PAGE_SIZE = 8;
 const today = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => today().slice(0, 7);
+const shiftMonth = (month, amount) => {
+  const [year, index] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, index - 1 + amount, 1)).toISOString().slice(0, 7);
+};
 const monthRange = (from, through) => {
   if (!from || from > through) return [];
   const [year, month] = from.split("-").map(Number);
@@ -78,6 +84,20 @@ const money = (amount) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number(amount || 0));
+const downloadCsv = (filename, headers, records) => {
+  const cell = (value) => {
+    let text = String(value ?? "");
+    if (/^[=+\-@]/.test(text)) text = `'${text}`;
+    return `"${text.replaceAll('"', '""')}"`;
+  };
+  const content = [headers, ...records].map((row) => row.map(cell).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
 const roundMoney = (amount) =>
   Math.round((Number(amount) + Number.EPSILON) * 100) / 100;
 const prettyDate = (date) =>
@@ -539,14 +559,96 @@ function SelectField({
 }) {
   return (
     <Field label={label} required={required} className={className}>
-      <select value={value} onChange={onChange} required={required}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      {options.length > 3 ? (
+        <SearchableSelect
+          value={value}
+          options={options}
+          required={required}
+          ariaLabel={label}
+          onValueChange={(next) => onChange({ target: { value: next } })}
+        />
+      ) : (
+        <select value={value} onChange={onChange} required={required}>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      )}
     </Field>
+  );
+}
+
+function SearchableSelect({
+  value,
+  options,
+  onValueChange,
+  placeholder = "Search options…",
+  ariaLabel,
+  required = false,
+  className = "",
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selected = options.find((option) => String(option.value) === String(value));
+  const matches = options.filter((option) =>
+    option.label.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const choose = (option) => {
+    onValueChange(option.value);
+    setQuery("");
+    setOpen(false);
+  };
+  return (
+    <div className={`search-select ${className}`}>
+      <input
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        aria-required={required}
+        required={required}
+        placeholder={open || !selected ? placeholder : ""}
+        value={open ? query : selected?.label || ""}
+        onFocus={() => {
+          setQuery("");
+          setOpen(true);
+        }}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+          if (event.key === "Enter" && open && matches[0]) {
+            event.preventDefault();
+            choose(matches[0]);
+          }
+        }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+      />
+      {open && (
+        <div className="search-select-options" role="listbox">
+          {matches.slice(0, 3).map((option) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={String(option.value) === String(value)}
+              key={option.value}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => choose(option)}
+            >
+              {option.label}
+            </button>
+          ))}
+          {!matches.length && (
+            <span className="search-select-empty">No matching options</span>
+          )}
+          {matches.length > 3 && (
+            <span className="search-select-more">Type to narrow results</span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 function PageHeading({ eyebrow, title, subtitle, action }) {
@@ -632,6 +734,40 @@ function TableToolbar({
     </div>
   );
 }
+function Pagination({ count, page, setPage }) {
+  const pages = Math.max(1, Math.ceil(count / PAGE_SIZE));
+  useEffect(() => {
+    if (page > pages) setPage(pages);
+  }, [page, pages, setPage]);
+  const first = count ? (page - 1) * PAGE_SIZE + 1 : 0;
+  const last = Math.min(page * PAGE_SIZE, count);
+  return (
+    <div className="pagination">
+      <span>Showing {first}–{last} of {count}</span>
+      <div>
+        <button
+          className="pagination-button"
+          onClick={() => setPage((value) => Math.max(1, value - 1))}
+          disabled={page <= 1}
+          aria-label="Previous page"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <span>Page {page} of {pages}</span>
+        <button
+          className="pagination-button"
+          onClick={() => setPage((value) => Math.min(pages, value + 1))}
+          disabled={page >= pages}
+          aria-label="Next page"
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+const pageSlice = (rows, page) =>
+  rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 function useLoad(loader, deps = []) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -701,7 +837,7 @@ function PageContent({
     );
   if (page === "halls")
     return (
-      <HallsPage version={version} refresh={refresh} setModal={setModal} />
+      <HallsPage version={version} setModal={setModal} />
     );
   if (page === "attendance")
     return (
@@ -715,19 +851,18 @@ function PageContent({
   if (page === "payments")
     return (
       <PaymentsPage
-        refresh={refresh}
-        notify={notify}
         version={version}
         setModal={setModal}
+        notify={notify}
       />
     );
   if (page === "reports")
     return (
       <ReportsPage
         version={version}
-        refresh={refresh}
         setModal={setModal}
         notify={notify}
+        user={user}
       />
     );
   return (
@@ -742,6 +877,15 @@ function PageContent({
 
 function Dashboard({ version, refresh, setModal, notify }) {
   const { data, error } = useLoad(() => api.dashboard.get(), [version]);
+  const [sessionQuery, setSessionQuery] = useState("");
+  const [sessionPage, setSessionPage] = useState(1);
+  const sessions = (data?.sessions || []).filter((session) =>
+    `${session.class_name} ${session.subject || ""}`
+      .toLowerCase()
+      .includes(sessionQuery.trim().toLowerCase()),
+  );
+  const visibleSessions = pageSlice(sessions, sessionPage);
+  useEffect(() => setSessionPage(1), [sessionQuery]);
   if (!data && !error)
     return <div className="loading-panel">Loading your overview…</div>;
   if (error) return <div className="error-inline">{error}</div>;
@@ -799,9 +943,17 @@ function Dashboard({ version, refresh, setModal, notify }) {
               Attendance <ArrowRight size={14} />
             </button>
           </div>
-          {data.sessions.length ? (
+          <div className="dashboard-session-search">
+            <TableToolbar
+              count={sessions.length}
+              placeholder="Search today's classes…"
+              query={sessionQuery}
+              setQuery={setSessionQuery}
+            />
+          </div>
+          {sessions.length ? (
             <div className="session-list">
-              {data.sessions.map((session) => (
+              {visibleSessions.map((session) => (
                 <div className="session-row" key={session.session_id}>
                   <div className="session-time">
                     <Clock3 size={14} />
@@ -825,6 +977,11 @@ function Dashboard({ version, refresh, setModal, notify }) {
                   </button>
                 </div>
               ))}
+              <Pagination
+                count={sessions.length}
+                page={sessionPage}
+                setPage={setSessionPage}
+              />
             </div>
           ) : (
             <div className="session-empty">
@@ -832,7 +989,7 @@ function Dashboard({ version, refresh, setModal, notify }) {
                 <CalendarDays size={19} />
               </div>
               <div>
-                <b>Nothing on the timetable today</b>
+                <b>                {sessionQuery ? "No sessions match your search" : "Nothing on the timetable today"}</b>
                 <span>
                   Head to Attendance to generate sessions from class schedules.
                 </span>
@@ -923,9 +1080,49 @@ function Dashboard({ version, refresh, setModal, notify }) {
   );
 }
 
-function StudentsPage({ version, setModal }) {
+function ExcelActions({ records, label, refresh, notify }) {
+  const [busy, setBusy] = useState(false);
+  const downloadTemplate = async () => {
+    setBusy(true);
+    try {
+      const result = await records.downloadTemplate();
+      if (!result.canceled) notify(`${label} Excel template downloaded.`);
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const importRecords = async () => {
+    setBusy(true);
+    try {
+      const result = await records.importExcel();
+      if (!result.canceled) {
+        notify(`Imported ${result.count} ${label} from ${result.fileName}.`);
+        refresh();
+      }
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Button kind="secondary" icon={Download} onClick={downloadTemplate} disabled={busy}>
+        Excel template
+      </Button>
+      <Button kind="secondary" icon={Upload} onClick={importRecords} disabled={busy}>
+        Import Excel
+      </Button>
+    </>
+  );
+}
+
+function StudentsPage({ version, refresh, setModal, notify }) {
   const { data, error } = useLoad(() => api.students.list(), [version]);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const rows = useMemo(
     () =>
       (data || []).filter((student) =>
@@ -935,6 +1132,7 @@ function StudentsPage({ version, setModal }) {
       ),
     [data, query],
   );
+  const visibleRows = pageSlice(rows, page);
   return (
     <div className="page-content">
       <PageHeading
@@ -943,6 +1141,7 @@ function StudentsPage({ version, setModal }) {
         subtitle="Keep student details and class memberships in one easy place."
         action={
           <div className="heading-actions">
+            <ExcelActions records={api.students} label="students" refresh={refresh} notify={notify} />
             <Button
               kind="secondary"
               icon={Users}
@@ -964,7 +1163,10 @@ function StudentsPage({ version, setModal }) {
           count={rows.length}
           placeholder="Find a student…"
           query={query}
-          setQuery={setQuery}
+          setQuery={(value) => {
+            setQuery(value);
+            setPage(1);
+          }}
         />
         {error && <div className="error-inline">{error}</div>}
         {rows.length ? (
@@ -981,7 +1183,7 @@ function StudentsPage({ version, setModal }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((student) => (
+                {visibleRows.map((student) => (
                   <tr
                     key={student.stid}
                     onClick={() =>
@@ -1059,19 +1261,24 @@ function StudentsPage({ version, setModal }) {
             }
           />
         )}
+        {!error && rows.length > 0 && (
+          <Pagination count={rows.length} page={page} setPage={setPage} />
+        )}
       </div>
     </div>
   );
 }
 
-function TeachersPage({ version, setModal }) {
+function TeachersPage({ version, refresh, setModal, notify }) {
   const { data, error } = useLoad(() => api.teachers.list(), [version]);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const rows = (data || []).filter((row) =>
     `${row.name} ${row.contact || ""}`
       .toLowerCase()
       .includes(query.toLowerCase()),
   );
+  const visibleRows = pageSlice(rows, page);
   return (
     <div className="page-content">
       <PageHeading
@@ -1079,12 +1286,15 @@ function TeachersPage({ version, setModal }) {
         title="Teachers"
         subtitle="Manage your teaching team and see who leads each class."
         action={
-          <Button
-            icon={Plus}
-            onClick={() => setModal({ type: "teacher-form" })}
-          >
-            Add teacher
-          </Button>
+          <div className="heading-actions">
+            <ExcelActions records={api.teachers} label="teachers" refresh={refresh} notify={notify} />
+            <Button
+              icon={Plus}
+              onClick={() => setModal({ type: "teacher-form" })}
+            >
+              Add teacher
+            </Button>
+          </div>
         }
       />
       <div className="panel data-panel">
@@ -1092,7 +1302,10 @@ function TeachersPage({ version, setModal }) {
           count={rows.length}
           placeholder="Find a teacher…"
           query={query}
-          setQuery={setQuery}
+          setQuery={(value) => {
+            setQuery(value);
+            setPage(1);
+          }}
         />
         {error && <div className="error-inline">{error}</div>}
         {rows.length ? (
@@ -1108,7 +1321,7 @@ function TeachersPage({ version, setModal }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, index) => (
+                {visibleRows.map((row, index) => (
                   <tr key={row.tid}>
                     <td>
                       <div className="person-cell">
@@ -1162,6 +1375,9 @@ function TeachersPage({ version, setModal }) {
             }
           />
         )}
+        {!error && rows.length > 0 && (
+          <Pagination count={rows.length} page={page} setPage={setPage} />
+        )}
       </div>
     </div>
   );
@@ -1170,11 +1386,13 @@ function TeachersPage({ version, setModal }) {
 function ClassesPage({ version, setModal }) {
   const { data, error } = useLoad(() => api.classes.list(), [version]);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const rows = (data || []).filter((row) =>
     `${row.class_name} ${row.teacher_name} ${row.subject || ""}`
       .toLowerCase()
       .includes(query.toLowerCase()),
   );
+  const visibleRows = pageSlice(rows, page);
   return (
     <div className="page-content">
       <PageHeading
@@ -1204,7 +1422,10 @@ function ClassesPage({ version, setModal }) {
           count={rows.length}
           placeholder="Find a class…"
           query={query}
-          setQuery={setQuery}
+          setQuery={(value) => {
+            setQuery(value);
+            setPage(1);
+          }}
         >
           <button
             className="filter-button"
@@ -1229,7 +1450,7 @@ function ClassesPage({ version, setModal }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, index) => (
+                {visibleRows.map((row, index) => (
                   <tr
                     key={row.class_id}
                     onClick={() =>
@@ -1307,6 +1528,9 @@ function ClassesPage({ version, setModal }) {
             }
           />
         )}
+        {!error && rows.length > 0 && (
+          <Pagination count={rows.length} page={page} setPage={setPage} />
+        )}
       </div>
     </div>
   );
@@ -1315,11 +1539,14 @@ function ClassesPage({ version, setModal }) {
 function HallsPage({ version, setModal }) {
   const { data, error } = useLoad(() => api.halls.list(), [version]);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const halls = (data || []).filter((hall) =>
     `${hall.name} ${hall.availability.map((slot) => slot.day_of_week).join(" ")}`
       .toLowerCase()
       .includes(query.toLowerCase()),
   );
+  const visibleHalls = pageSlice(halls, page);
+  const weekDays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
   const availabilityText = (slots) =>
     slots.length
       ? slots
@@ -1346,7 +1573,10 @@ function HallsPage({ version, setModal }) {
           count={halls.length}
           placeholder="Find a hall…"
           query={query}
-          setQuery={setQuery}
+          setQuery={(value) => {
+            setQuery(value);
+            setPage(1);
+          }}
         >
           <button
             className="filter-button"
@@ -1369,7 +1599,7 @@ function HallsPage({ version, setModal }) {
                 </tr>
               </thead>
               <tbody>
-                {halls.map((hall) => (
+                {visibleHalls.map((hall) => (
                   <tr key={hall.hall_id}>
                     <td>
                       <div className="class-cell">
@@ -1424,6 +1654,9 @@ function HallsPage({ version, setModal }) {
             }
           />
         )}
+        {!error && halls.length > 0 && (
+          <Pagination count={halls.length} page={page} setPage={setPage} />
+        )}
       </div>
       <div className="hall-guidance">
         <DoorOpen size={16} />
@@ -1432,6 +1665,51 @@ function HallsPage({ version, setModal }) {
           use the same hall at overlapping times.
         </span>
       </div>
+      <section className="panel hall-calendar">
+        <div className="report-heading">
+          <div>
+            <h2>Weekly hall availability</h2>
+            <p>Booked class times are highlighted in red with enrolment and capacity.</p>
+          </div>
+          <span className="calendar-legend"><i /> Booked class</span>
+        </div>
+        <div className="hall-calendar-scroll">
+          <div className="hall-calendar-grid">
+            <div className="hall-calendar-head hall-calendar-hall">HALL</div>
+            {weekDays.map((day) => (
+              <div className="hall-calendar-head" key={day}>{day.slice(0, 3).toUpperCase()}</div>
+            ))}
+            {visibleHalls.map((hall) => (
+              <React.Fragment key={hall.hall_id}>
+                <div className="hall-calendar-name">
+                  <b>{hall.name}</b>
+                  <span>Capacity {hall.capacity || "Not set"}</span>
+                </div>
+                {weekDays.map((day) => {
+                  const bookings = (hall.bookings || []).filter((slot) => slot.day_of_week === day);
+                  const availability = hall.availability.filter((slot) => slot.day_of_week === day);
+                  return (
+                    <div className="hall-calendar-cell" key={`${hall.hall_id}-${day}`}>
+                      {bookings.length ? bookings.map((booking) => (
+                        <div className="hall-booking" key={`${booking.class_id}-${booking.start_time}`}>
+                          <b>{booking.class_name}</b>
+                          <span>{booking.start_time}–{booking.end_time}</span>
+                          <small>{booking.student_count} enrolled · capacity {hall.capacity || "—"}</small>
+                        </div>
+                      )) : availability.length ? availability.map((slot) => (
+                        <div className="hall-open-slot" key={slot.availability_id}>
+                          Available<br />{slot.start_time}–{slot.end_time}
+                        </div>
+                      )) : <span className="hall-closed">No availability</span>}
+                    </div>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+            {!visibleHalls.length && <div className="hall-calendar-empty">No halls match the current search.</div>}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -1442,6 +1720,15 @@ function AttendancePage({ version, refresh, setModal, notify }) {
     () => api.sessions.list(date),
     [date, version],
   );
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const sessions = (data || []).filter((session) =>
+    `${session.class_name} ${session.subject || ""} ${session.status}`
+      .toLowerCase()
+      .includes(query.trim().toLowerCase()),
+  );
+  const visibleSessions = pageSlice(sessions, page);
+  useEffect(() => setPage(1), [date, query]);
   const [generating, setGenerating] = useState(false);
   const generate = async () => {
     setGenerating(true);
@@ -1516,10 +1803,18 @@ function AttendancePage({ version, refresh, setModal, notify }) {
           </button>
         </div>
       </div>
+      <div className="panel data-panel attendance-search">
+        <TableToolbar
+          count={sessions.length}
+          placeholder="Search sessions by class or subject…"
+          query={query}
+          setQuery={setQuery}
+        />
+      </div>
       {error && <div className="error-inline">{error}</div>}
-      {data?.length ? (
+      {sessions.length ? (
         <div className="attendance-grid">
-          {data.map((session) => (
+          {visibleSessions.map((session) => (
             <article className="attendance-card panel" key={session.session_id}>
               <div className="attendance-card-top">
                 <div className="class-icon class-color-0">
@@ -1561,6 +1856,9 @@ function AttendancePage({ version, refresh, setModal, notify }) {
               </div>
             </article>
           ))}
+            <div className="attendance-pagination">
+              <Pagination count={sessions.length} page={page} setPage={setPage} />
+            </div>
         </div>
       ) : (
         !error && (
@@ -1583,28 +1881,58 @@ function AttendancePage({ version, refresh, setModal, notify }) {
   );
 }
 
-function PaymentsPage({ refresh, notify, version, setModal }) {
+function PaymentsPage({ version, setModal, notify }) {
   const [month, setMonth] = useState(thisMonth());
+  const [paymentTab, setPaymentTab] = useState("students");
+  const [studentFilter, setStudentFilter] = useState("");
+  const [historyPeriod, setHistoryPeriod] = useState("3");
+  const [historyMonth, setHistoryMonth] = useState(thisMonth());
+  const [historyFrom, setHistoryFrom] = useState(shiftMonth(thisMonth(), -2));
+  const [historyTo, setHistoryTo] = useState(thisMonth());
+  const { data: studentList } = useLoad(() => api.students.list(), [version]);
   const { data, error } = useLoad(
     () => api.payments.overview(month),
     [month, version],
   );
-  const [query, setQuery] = useState("");
-  const filtered = (data?.rows || []).filter((row) =>
-    `${row.name} ${row.class_name}`.toLowerCase().includes(query.toLowerCase()),
+  const historyRange = historyPeriod === "3"
+    ? [shiftMonth(thisMonth(), -2), thisMonth()]
+    : historyPeriod === "month"
+      ? [historyMonth, historyMonth]
+      : [historyFrom, historyTo];
+  const studentHistory = useLoad(
+    () => studentFilter
+      ? api.reports.paymentRecords({
+          stid: Number(studentFilter),
+          start_month: historyRange[0],
+          end_month: historyRange[1],
+        })
+      : Promise.resolve([]),
+    [studentFilter, historyPeriod, historyMonth, historyFrom, historyTo, version],
   );
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const rows = data?.rows || [];
+  const students = (studentList || []).filter((student) => student.status === "active");
+  const filtered = rows.filter((row) =>
+    `${row.name} ${row.rfid || ""} ${row.class_name}`.toLowerCase().includes(query.toLowerCase())
+    && (!studentFilter || row.stid === Number(studentFilter)),
+  );
+  const visibleRows = pageSlice(filtered, page);
   const [selected, setSelected] = useState([]);
   useEffect(() => {
     setSelected([]);
-  }, [month, data]);
-  const unpaid = filtered.filter((row) => !row.payment_id);
+    setPage(1);
+  }, [month, data, studentFilter]);
+  const unpaid = visibleRows.filter((row) => !row.payment_id);
   const pay = async (ids) => {
     if (!ids.length) return;
+    const reviewRows = rows.filter((row) => ids.includes(row.enrollment_id) && !row.payment_id);
+    if (reviewRows.length) setModal({ type: "payment-review", rows: reviewRows, month });
+  };
+  const exportHistory = async () => {
     try {
-      await api.payments.pay({ enrollment_ids: ids, month });
-      notify(`${ids.length} payment${ids.length === 1 ? "" : "s"} recorded.`);
-      setSelected([]);
-      refresh();
+      const result = await api.reports.exportPDF();
+      if (!result.canceled) notify("Filtered student payment history exported as a PDF.");
     } catch (err) {
       notify(err.message, "error");
     }
@@ -1625,6 +1953,12 @@ function PaymentsPage({ refresh, notify, version, setModal }) {
           </Button>
         }
       />
+      <div className="report-tabs payment-tabs" role="tablist" aria-label="Payment sections">
+        <button className={paymentTab === "students" ? "active" : ""} onClick={() => setPaymentTab("students")}>Student payments</button>
+        <button className={paymentTab === "teachers" ? "active" : ""} onClick={() => setPaymentTab("teachers")}>Teacher payments</button>
+      </div>
+      {paymentTab === "students" ? (
+      <>
       <div className="payment-summary-grid">
         <div className="payment-summary panel">
           <div className="payment-summary-icon paid-icon">
@@ -1661,15 +1995,37 @@ function PaymentsPage({ refresh, notify, version, setModal }) {
           count={filtered.length}
           placeholder="Find a student or class…"
           query={query}
-          setQuery={setQuery}
+          setQuery={(value) => {
+            setQuery(value);
+            setPage(1);
+          }}
         >
+          <SearchableSelect
+            value={studentFilter}
+            ariaLabel="Filter payments by student"
+            placeholder="Search a student…"
+            options={[
+              { value: "", label: "All students" },
+              ...students.map((student) => ({
+                value: String(student.stid),
+                label: student.name,
+              })),
+            ]}
+            onValueChange={(value) => {
+              setStudentFilter(value);
+              setPage(1);
+            }}
+          />
           <input
             type="month"
             max={thisMonth()}
             className="month-input"
             aria-label="Payment month"
             value={month}
-            onChange={(event) => setMonth(event.target.value)}
+            onChange={(event) => {
+              setMonth(event.target.value);
+              setPage(1);
+            }}
           />
           {selected.length > 0 && (
             <Button onClick={() => pay(selected)}>
@@ -1712,7 +2068,7 @@ function PaymentsPage({ refresh, notify, version, setModal }) {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((row) => (
+                {visibleRows.map((row) => (
                   <tr key={row.enrollment_id}>
                     <td>
                       <input
@@ -1778,9 +2134,15 @@ function PaymentsPage({ refresh, notify, version, setModal }) {
         ) : (
           !error && (
             <EmptyState
-              title={query ? "No matching fees" : "No enrolled students yet"}
+              title={
+                studentFilter
+                  ? "No pending payments for this student"
+                  : query ? "No matching fees" : "No enrolled students yet"
+              }
               detail={
-                query
+                studentFilter
+                  ? "This student has no outstanding class fees for the selected month."
+                  : query
                   ? "Try another search."
                   : "Enroll students in an active class to see their monthly fees here."
               }
@@ -1795,251 +2157,427 @@ function PaymentsPage({ refresh, notify, version, setModal }) {
             />
           )
         )}
+        {!error && filtered.length > 0 && (
+          <Pagination count={filtered.length} page={page} setPage={setPage} />
+        )}
       </div>
+      {studentFilter && (
+        <section className="panel data-panel payout-panel">
+          <div className="report-heading">
+            <div>
+              <h2>Student payment history</h2>
+              <p>Paid tuition records for {students.find((student) => String(student.stid) === studentFilter)?.name || "the selected student"}.</p>
+            </div>
+            <Button kind="secondary" icon={Download} onClick={exportHistory} disabled={Boolean(studentHistory.error) || !studentHistory.data}>
+              Export filtered PDF
+            </Button>
+          </div>
+          {studentHistory.error && <div className="error-inline">{studentHistory.error}</div>}
+          <div className="history-filter-row">
+            <label>Period
+              <select className="month-input" value={historyPeriod} onChange={(event) => setHistoryPeriod(event.target.value)}>
+                <option value="3">Last 3 months</option>
+                <option value="month">Selected month</option>
+                <option value="custom">Month range</option>
+              </select>
+            </label>
+            {historyPeriod === "month" && (
+              <label>Month
+                <input type="month" className="month-input" max={thisMonth()} value={historyMonth} onChange={(event) => setHistoryMonth(event.target.value)} />
+              </label>
+            )}
+            {historyPeriod === "custom" && (
+              <>
+                <label>From
+                  <input type="month" className="month-input" max={historyTo} value={historyFrom} onChange={(event) => setHistoryFrom(event.target.value)} />
+                </label>
+                <label>To
+                  <input type="month" className="month-input" min={historyFrom} max={thisMonth()} value={historyTo} onChange={(event) => setHistoryTo(event.target.value)} />
+                </label>
+              </>
+            )}
+          </div>
+          {studentHistory.data?.length ? (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>CLASS</th><th>FOR MONTH</th><th>PAID ON</th><th>AMOUNT</th><th>NOTES</th></tr></thead>
+                <tbody>{studentHistory.data.map((row) => (
+                  <tr key={row.payment_id}><td>{row.class_name}</td><td>{row.for_month}</td><td>{prettyDate(row.payment_date)}</td><td><b>{money(row.amount_paid)}</b></td><td>{row.notes || "—"}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : !studentHistory.error && <div className="payout-empty">No payments for this student in the selected period.</div>}
+          <div className="print-report">
+            <header><h1>Student payment history</h1><p>{students.find((student) => String(student.stid) === studentFilter)?.name}</p><span>{historyRange[0]} to {historyRange[1]}</span></header>
+            <table><thead><tr><th>Class</th><th>For month</th><th>Paid on</th><th>Amount</th><th>Notes</th></tr></thead>
+              <tbody>{(studentHistory.data || []).map((row) => <tr key={row.payment_id}><td>{row.class_name}</td><td>{row.for_month}</td><td>{row.payment_date}</td><td>{money(row.amount_paid)}</td><td>{row.notes || "—"}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </section>
+      )}
+      </>
+      ) : (
+        <TeacherPaymentsPanel version={version} setModal={setModal} notify={notify} />
+      )}
     </div>
   );
 }
 
-function ReportsPage({ version, refresh, setModal, notify }) {
+function TeacherPaymentsPanel({ version, setModal, notify }) {
+  const [teacherId, setTeacherId] = useState("");
+  const [period, setPeriod] = useState("3");
   const [month, setMonth] = useState(thisMonth());
-  const { data, error } = useLoad(
-    () => api.reports.classEarnings(month),
-    [month, version],
+  const [from, setFrom] = useState(shiftMonth(thisMonth(), -2));
+  const [to, setTo] = useState(thisMonth());
+  const range = period === "3"
+    ? [shiftMonth(thisMonth(), -2), thisMonth()]
+    : period === "month"
+      ? [month, month]
+      : [from, to];
+  const { data: teachers } = useLoad(() => api.teachers.list(), [version]);
+  const payouts = useLoad(
+    () => api.payouts.list({
+      tid: teacherId ? Number(teacherId) : undefined,
+      start_month: range[0],
+      end_month: range[1],
+    }),
+    [teacherId, period, month, from, to, version],
   );
   const balances = useLoad(() => api.reports.teacherBalances(), [version]);
-  const collected = (data || []).reduce(
-    (sum, row) => sum + Number(row.collected),
-    0,
+  const exportHistory = async () => {
+    try {
+      const result = await api.reports.exportPDF();
+      if (!result.canceled) notify("Filtered teacher payout history exported as a PDF.");
+    } catch (err) {
+      notify(err.message, "error");
+    }
+  };
+  return (
+    <section className="panel data-panel teacher-payment-panel">
+      <div className="report-heading">
+        <div><h2>Teacher payments &amp; payout records</h2><p>Review teacher balances and payouts within a selected month period.</p></div>
+        <div className="heading-actions">
+          <Button kind="secondary" icon={Download} onClick={exportHistory} disabled={!payouts.data || Boolean(payouts.error)}>Export filtered PDF</Button>
+          <Button icon={Plus} onClick={() => setModal({ type: "payout-form" })}>Record teacher payout</Button>
+        </div>
+      </div>
+      <div className="history-filter-row">
+        <label>Teacher
+          <SearchableSelect
+            value={teacherId}
+            ariaLabel="Filter payouts by teacher"
+            placeholder="Search a teacher…"
+            options={[
+              { value: "", label: "All teachers" },
+              ...(teachers || []).map((teacher) => ({ value: String(teacher.tid), label: teacher.name })),
+            ]}
+            onValueChange={setTeacherId}
+          />
+        </label>
+        <label>Period
+          <select className="month-input" value={period} onChange={(event) => setPeriod(event.target.value)}>
+            <option value="3">Last 3 months</option>
+            <option value="month">Selected month</option>
+            <option value="custom">Month range</option>
+          </select>
+        </label>
+        {period === "month" && (
+          <label>Month
+            <input type="month" className="month-input" max={thisMonth()} value={month} onChange={(event) => setMonth(event.target.value)} />
+          </label>
+        )}
+        {period === "custom" && (
+          <>
+            <label>From
+              <input type="month" className="month-input" max={to} value={from} onChange={(event) => setFrom(event.target.value)} />
+            </label>
+            <label>To
+              <input type="month" className="month-input" min={from} max={thisMonth()} value={to} onChange={(event) => setTo(event.target.value)} />
+            </label>
+          </>
+        )}
+      </div>
+      {payouts.error && <div className="error-inline">{payouts.error}</div>}
+      <div className="report-heading compact-report-heading"><div><h2>Payout history</h2><p>{range[0]} through {range[1]}</p></div></div>
+      {payouts.data?.length ? (
+        <div className="table-wrap"><table>
+          <thead><tr><th>TEACHER</th><th>DATE</th><th>CLASSES / MONTHS</th><th>NOTES</th><th>AMOUNT PAID</th></tr></thead>
+          <tbody>{payouts.data.map((row) => <tr key={row.payout_id}><td><b>{row.teacher_name}</b></td><td>{prettyDate(row.payout_date)}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td><b>{money(row.amount)}</b></td></tr>)}</tbody>
+        </table></div>
+      ) : !payouts.error && <div className="payout-empty">No payouts for this teacher and period.</div>}
+      <div className="report-heading compact-report-heading"><div><h2>Teacher balances</h2><p>Total commission earned minus payouts made to date.</p></div></div>
+      {balances.error && <div className="error-inline">{balances.error}</div>}
+      {balances.data?.filter((row) => !teacherId || row.tid === Number(teacherId)).length ? (
+        <div className="table-wrap"><table>
+          <thead><tr><th>TEACHER</th><th>EARNED TO DATE</th><th>PAID OUT</th><th>REMAINING BALANCE</th></tr></thead>
+          <tbody>{balances.data.filter((row) => !teacherId || row.tid === Number(teacherId)).map((row) => (
+            <tr key={row.tid}><td><b>{row.name}</b></td><td>{money(row.earned)}</td><td>{money(row.paid_out)}</td><td><b className={Number(row.outstanding) > 0 ? "pending-amount" : ""}>{money(row.outstanding)}</b></td></tr>
+          ))}</tbody>
+        </table></div>
+      ) : !balances.error && <div className="payout-empty">No teacher balance records found.</div>}
+      <div className="print-report">
+        <header><h1>Teacher payout report</h1><p>{teacherId ? teachers?.find((teacher) => String(teacher.tid) === teacherId)?.name : "All teachers"}</p><span>{range[0]} to {range[1]}</span></header>
+        <table><thead><tr><th>Teacher</th><th>Date</th><th>Classes / months</th><th>Notes</th><th>Amount</th></tr></thead>
+          <tbody>{(payouts.data || []).map((row) => <tr key={row.payout_id}><td>{row.teacher_name}</td><td>{row.payout_date}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td>{money(row.amount)}</td></tr>)}</tbody>
+        </table>
+      </div>
+    </section>
   );
-  const pending = (data || []).reduce(
-    (sum, row) => sum + Number(row.pending),
-    0,
+}
+
+function ReportsPage({ version, setModal, notify, user }) {
+  const [month, setMonth] = useState(thisMonth());
+  const [reportSection, setReportSection] = useState("students");
+  const [reportStudentId, setReportStudentId] = useState("");
+  const [historyYear, setHistoryYear] = useState("");
+  const [historyMonth, setHistoryMonth] = useState("");
+  const [historyClass, setHistoryClass] = useState("");
+  const [classQuery, setClassQuery] = useState("");
+  const [balanceQuery, setBalanceQuery] = useState("");
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [payoutQuery, setPayoutQuery] = useState("");
+  const [pendingQuery, setPendingQuery] = useState("");
+  const [classPage, setClassPage] = useState(1);
+  const [balancePage, setBalancePage] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [payoutPage, setPayoutPage] = useState(1);
+  const [pendingPage, setPendingPage] = useState(1);
+  const earnings = useLoad(() => api.reports.classEarnings(month), [month, version]);
+  const balances = useLoad(() => api.reports.teacherBalances(), [version]);
+  const history = useLoad(() => api.reports.paymentRecords(), [version]);
+  const payouts = useLoad(() => api.payouts.list(), [version]);
+  const pendingRecords = useLoad(() => api.reports.pendingPayments(month), [month, version]);
+  const classes = useLoad(() => api.classes.list(), [version]);
+  const students = useLoad(() => api.students.list(), [version]);
+  const attendance = useLoad(
+    () => api.reports.studentAttendance({
+      stid: reportStudentId ? Number(reportStudentId) : undefined,
+      start_month: month,
+      end_month: month,
+    }),
+    [reportStudentId, month, version],
   );
-  const teacherTotal = (data || []).reduce(
-    (sum, row) => sum + Number(row.teacher_earnings),
-    0,
+  const data = earnings.data || [];
+  const filteredClasses = data.filter((row) =>
+    `${row.class_name} ${row.teacher_name}`.toLowerCase().includes(classQuery.toLowerCase()),
   );
-  const orgTotal = (data || []).reduce(
-    (sum, row) => sum + Number(row.org_earnings),
-    0,
+  const filteredBalances = (balances.data || []).filter((row) =>
+    row.name.toLowerCase().includes(balanceQuery.toLowerCase()),
   );
-  const pendingTeacher = (data || []).reduce(
-    (sum, row) => sum + Number(row.pending_teacher),
-    0,
+  const selectedHistory = (history.data || []).filter((row) =>
+    (!historyYear || row.for_month.slice(0, 4) === historyYear)
+    && (!historyMonth || row.for_month === historyMonth)
+    && (!historyClass || row.class_id === Number(historyClass))
+    && (!reportStudentId || row.stid === Number(reportStudentId)),
   );
-  const pendingOrg = (data || []).reduce(
-    (sum, row) => sum + Number(row.pending_org),
-    0,
+  const filteredHistory = selectedHistory.filter((row) =>
+    `${row.student_name} ${row.rfid || ""} ${row.class_name} ${row.teacher_name} ${row.notes || ""}`
+      .toLowerCase().includes(historyQuery.toLowerCase()),
   );
+  const filteredPayouts = (payouts.data || []).filter((row) =>
+    `${row.teacher_name} ${row.details || ""} ${row.notes || ""} ${row.payout_date}`
+      .toLowerCase().includes(payoutQuery.toLowerCase()),
+  );
+  const filteredPending = (pendingRecords.data || []).filter((row) =>
+    `${row.student_name} ${row.rfid || ""} ${row.class_name} ${row.teacher_name}`
+      .toLowerCase().includes(pendingQuery.toLowerCase())
+      && (!reportStudentId || row.stid === Number(reportStudentId)),
+  );
+  const years = [...new Set((history.data || []).map((row) => row.for_month.slice(0, 4)))].sort().reverse();
+  const collected = data.reduce((sum, row) => sum + Number(row.collected), 0);
+  const pending = data.reduce((sum, row) => sum + Number(row.pending), 0);
+  const teacherTotal = data.reduce((sum, row) => sum + Number(row.teacher_earnings), 0);
+  const orgTotal = data.reduce((sum, row) => sum + Number(row.org_earnings), 0);
+  const pendingTeacher = data.reduce((sum, row) => sum + Number(row.pending_teacher), 0);
+  const pendingOrg = data.reduce((sum, row) => sum + Number(row.pending_org), 0);
+  const exportPdf = async () => {
+    try {
+      const result = await api.reports.exportPDF();
+      if (!result.canceled) notify("Report exported as a PDF.");
+    } catch (err) {
+      notify(err.message, "error");
+    }
+  };
   return (
     <div className="page-content">
       <PageHeading
         eyebrow="UNDERSTAND YOUR NUMBERS"
         title="Reports"
-        subtitle="A straightforward view of tuition income, outstanding fees and teacher shares."
+        subtitle="Review student fees, outstanding payments and every teacher payout."
         action={
-          <input
-            type="month"
-            className="month-input"
-            aria-label="Report month"
-            value={month}
-            onChange={(event) => setMonth(event.target.value)}
-          />
+          <div className="heading-actions">
+            <input
+              type="month"
+              className="month-input"
+              aria-label="Report month"
+              value={month}
+              onChange={(event) => setMonth(event.target.value)}
+            />
+            <Button
+              kind="secondary"
+              icon={Download}
+              onClick={exportPdf}
+              disabled={!history.data || !payouts.data || !pendingRecords.data}
+            >
+              Export PDF
+            </Button>
+          </div>
         }
       />
+      <div className="report-tabs" role="tablist" aria-label="Report sections">
+        <button className={reportSection === "students" ? "active" : ""} onClick={() => setReportSection("students")}>Student reports</button>
+        <button className={reportSection === "teachers" ? "active" : ""} onClick={() => setReportSection("teachers")}>Teacher reports</button>
+        <button className={reportSection === "classes" ? "active" : ""} onClick={() => setReportSection("classes")}>Class reports</button>
+      </div>
+      {reportSection === "classes" && (
+      <>
       <div className="report-metrics">
-        <div>
-          <span>Total collected</span>
-          <b>{money(collected)}</b>
-          <small>Payments recorded for {month}</small>
-        </div>
-        <div>
-          <span>Outstanding tuition</span>
-          <b>{money(pending)}</b>
-          <small>After individual student discounts</small>
-        </div>
-        <div>
-          <span>Teacher share</span>
-          <b>{money(teacherTotal)}</b>
-          <small>{money(pendingTeacher)} share of outstanding fees</small>
-        </div>
-        <div>
-          <span>Organization share</span>
-          <b>{money(orgTotal)}</b>
-          <small>{money(pendingOrg)} share of outstanding fees</small>
-        </div>
+        <div><span>Total collected</span><b>{money(collected)}</b><small>Payments recorded for {month}</small></div>
+        <div><span>Outstanding tuition</span><b>{money(pending)}</b><small>After individual student discounts</small></div>
+        <div><span>Teacher share</span><b>{money(teacherTotal)}</b><small>{money(pendingTeacher)} share of outstanding fees</small></div>
+        <div><span>Organization share</span><b>{money(orgTotal)}</b><small>{money(pendingOrg)} share of outstanding fees</small></div>
       </div>
       <div className="panel data-panel report-table">
-        <div className="report-heading">
-          <div>
-            <h2>Class earnings</h2>
-            <p>Per-class breakdown for {month}</p>
-          </div>
-        </div>
-        {error && <div className="error-inline">{error}</div>}
-        {data?.length ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>CLASS &amp; TEACHER</th>
-                  <th>ENROLLED</th>
-                  <th>PAID / DUE</th>
-                  <th>COLLECTED</th>
-                  <th>OUTSTANDING</th>
-                  <th>TEACHER EARNED / DUE</th>
-                  <th>ORG. EARNED / DUE</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((row) => (
+        <div className="report-heading"><div><h2>Class earnings</h2><p>Per-class breakdown for {month}</p></div></div>
+        {earnings.error && <div className="error-inline">{earnings.error}</div>}
+        <TableToolbar count={filteredClasses.length} placeholder="Search class or teacher…" query={classQuery} setQuery={(value) => { setClassQuery(value); setClassPage(1); }} />
+        {filteredClasses.length ? (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>CLASS &amp; TEACHER</th><th>ENROLLED</th><th>PAID / DUE</th><th>COLLECTED</th><th>OUTSTANDING</th><th>TEACHER EARNED / DUE</th><th>ORG. EARNED / DUE</th></tr></thead>
+                <tbody>{pageSlice(filteredClasses, classPage).map((row) => (
                   <tr key={row.class_id}>
-                    <td>
-                      <div>
-                        <b>{row.class_name}</b>
-                        <div className="sub-cell">
-                          {row.teacher_name} ·{" "}
-                          {row.teacher_commission_percentage}% commission
-                        </div>
-                      </div>
-                    </td>
+                    <td><b>{row.class_name}</b><div className="sub-cell">{row.teacher_name} · {row.teacher_commission_percentage}% commission</div></td>
                     <td>{row.enrolled_count}</td>
-                    <td>
-                      <span className="paid-due">
-                        {row.paid_students} paid <i>·</i>{" "}
-                        {row.not_paid_students} due
-                      </span>
-                    </td>
-                    <td>
-                      <b className="table-money">{money(row.collected)}</b>
-                    </td>
+                    <td>{row.paid_students} paid · {row.not_paid_students} due</td>
+                    <td><b className="table-money">{money(row.collected)}</b></td>
                     <td>{money(row.pending)}</td>
-                    <td>
-                      {money(row.teacher_earnings)}{" "}
-                      <div className="sub-cell">
-                        {money(row.pending_teacher)} pending
-                      </div>
-                    </td>
-                    <td>
-                      {money(row.org_earnings)}{" "}
-                      <div className="sub-cell">
-                        {money(row.pending_org)} pending
-                      </div>
-                    </td>
+                    <td>{money(row.teacher_earnings)}<div className="sub-cell">{money(row.pending_teacher)} pending</div></td>
+                    <td>{money(row.org_earnings)}<div className="sub-cell">{money(row.pending_org)} pending</div></td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          !error && (
-            <EmptyState
-              title="Your reports will appear here"
-              detail="Create a class and enrol students to start tracking monthly earnings."
-            />
-          )
-        )}
+                ))}</tbody>
+              </table>
+            </div>
+            <Pagination count={filteredClasses.length} page={classPage} setPage={setClassPage} />
+          </>
+        ) : !earnings.error && <EmptyState title={classQuery ? "No matching classes" : "Your reports will appear here"} detail={classQuery ? "Try a different class or teacher name." : "Create a class and enrol students to start tracking monthly earnings."} />}
       </div>
+      </>
+      )}
+      {reportSection === "teachers" && (
+      <>
       <section className="panel data-panel payout-panel">
         <div className="report-heading">
-          <div>
-            <h2>Teacher payout balances</h2>
-            <p>Total earned from recorded tuition minus all payouts to date</p>
-          </div>
-          <Button
-            kind="secondary"
-            icon={Plus}
-            onClick={() => setModal({ type: "payout-form" })}
-          >
-            Add payout
-          </Button>
+          <div><h2>Teacher payout balances</h2><p>Total earned from recorded tuition minus all payouts to date</p></div>
+          <Button kind="secondary" icon={Plus} onClick={() => setModal({ type: "payout-form" })}>Add payout</Button>
         </div>
         {balances.error && <div className="error-inline">{balances.error}</div>}
-        {balances.data?.length ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>TEACHER</th>
-                  <th>EARNED TO DATE</th>
-                  <th>PAID OUT</th>
-                  <th>REMAINING BALANCE</th>
-                </tr>
-              </thead>
-              <tbody>
-                {balances.data.map((row) => (
-                  <tr key={row.tid}>
-                    <td>
-                      <b>{row.name}</b>
-                    </td>
-                    <td>{money(row.earned)}</td>
-                    <td>{money(row.paid_out)}</td>
-                    <td>
-                      <b>{money(row.outstanding)}</b>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          !balances.error && (
-            <div className="payout-empty">
-              Teacher balances will appear after you add a teacher and class.
-            </div>
-          )
-        )}
+        <TableToolbar count={filteredBalances.length} placeholder="Search teacher balances…" query={balanceQuery} setQuery={(value) => { setBalanceQuery(value); setBalancePage(1); }} />
+        {filteredBalances.length ? (
+          <>
+            <div className="table-wrap"><table>
+              <thead><tr><th>TEACHER</th><th>EARNED TO DATE</th><th>PAID OUT</th><th>REMAINING BALANCE</th></tr></thead>
+              <tbody>{pageSlice(filteredBalances, balancePage).map((row) => <tr key={row.tid}><td><b>{row.name}</b></td><td>{money(row.earned)}</td><td>{money(row.paid_out)}</td><td><b>{money(row.outstanding)}</b></td></tr>)}</tbody>
+            </table></div>
+            <Pagination count={filteredBalances.length} page={balancePage} setPage={setBalancePage} />
+          </>
+        ) : !balances.error && <div className="payout-empty">{balanceQuery ? "No teacher balances match this search." : "Teacher balances will appear after you add a teacher and class."}</div>}
       </section>
-      <PayoutList version={version} />
-    </div>
-  );
-}
-function PayoutList({ version }) {
-  const { data, error } = useLoad(() => api.payouts.list(), [version]);
-  return (
-    <section className="panel data-panel payout-panel">
-      <div className="report-heading">
-        <div>
-          <h2>Recent teacher payouts</h2>
-          <p>Recorded payments to your teaching team</p>
-        </div>
-      </div>
-      {error && <div className="error-inline">{error}</div>}
-      {data?.length ? (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>TEACHER</th>
-                <th>DATE</th>
-                <th>CLASSES / MONTHS</th>
-                <th>NOTES</th>
-                <th>AMOUNT</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.slice(0, 8).map((row) => (
-                <tr key={row.payout_id}>
-                  <td>
-                    <b>{row.teacher_name}</b>
-                  </td>
-                  <td>{prettyDate(row.payout_date)}</td>
-                  <td>{row.details || "—"}</td>
-                  <td>{row.notes || "—"}</td>
-                  <td>
-                    <b>{money(row.amount)}</b>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        !error && (
-          <div className="payout-empty">No teacher payouts recorded yet.</div>
-        )
+      <section className="panel data-panel payout-panel">
+        <div className="report-heading"><div><h2>Teacher payout records</h2><p>Recorded payouts and the classes/months they cover.</p></div></div>
+        {payouts.error && <div className="error-inline">{payouts.error}</div>}
+        <TableToolbar count={filteredPayouts.length} placeholder="Search teacher payouts…" query={payoutQuery} setQuery={(value) => { setPayoutQuery(value); setPayoutPage(1); }} />
+        {filteredPayouts.length ? (
+          <>
+            <div className="table-wrap"><table>
+              <thead><tr><th>TEACHER</th><th>DATE</th><th>CLASSES / MONTHS</th><th>NOTES</th><th>AMOUNT</th></tr></thead>
+              <tbody>{pageSlice(filteredPayouts, payoutPage).map((row) => (
+                <tr key={row.payout_id}><td><b>{row.teacher_name}</b></td><td>{prettyDate(row.payout_date)}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td><b>{money(row.amount)}</b></td></tr>
+              ))}</tbody>
+            </table></div>
+            <Pagination count={filteredPayouts.length} page={payoutPage} setPage={setPayoutPage} />
+          </>
+        ) : !payouts.error && <div className="payout-empty">No teacher payouts recorded yet.</div>}
+      </section>
+      </>
       )}
-    </section>
+      {reportSection === "students" && (
+      <>
+      <section className="panel data-panel payout-panel">
+        <div className="report-heading">
+          <div><h2>Student reports</h2><p>Review attendance, paid tuition history and pending fees for {month}.</p></div>
+          <SearchableSelect
+            value={reportStudentId}
+            ariaLabel="Filter student reports"
+            placeholder="Search student…"
+            options={[
+              { value: "", label: "All students" },
+              ...(students.data || []).map((student) => ({ value: String(student.stid), label: student.name })),
+            ]}
+            onValueChange={setReportStudentId}
+          />
+        </div>
+        <div className="report-heading compact-report-heading"><div><h2>Student payment records</h2><p>Filter payment history by month, year and class.</p></div></div>
+        {history.error && <div className="error-inline">{history.error}</div>}
+        <TableToolbar count={filteredHistory.length} placeholder="Search student, RFID, class or teacher…" query={historyQuery} setQuery={(value) => { setHistoryQuery(value); setHistoryPage(1); }}>
+          <SearchableSelect className="toolbar-search-select" ariaLabel="Filter payment records by year" value={historyYear} options={[{ value: "", label: "All years" }, ...years.map((year) => ({ value: year, label: year }))]} onValueChange={(value) => { setHistoryYear(value); setHistoryPage(1); }} />
+          <input type="month" max={thisMonth()} className="month-input" aria-label="Filter payment records by month" value={historyMonth} onChange={(event) => { setHistoryMonth(event.target.value); setHistoryPage(1); }} />
+          <SearchableSelect className="toolbar-search-select" ariaLabel="Filter payment records by class" value={historyClass} options={[{ value: "", label: "All classes" }, ...(classes.data || []).map((item) => ({ value: String(item.class_id), label: item.class_name }))]} onValueChange={(value) => { setHistoryClass(value); setHistoryPage(1); }} />
+        </TableToolbar>
+        {filteredHistory.length ? <>
+          <div className="table-wrap"><table>
+            <thead><tr><th>STUDENT</th><th>CLASS</th><th>TEACHER</th><th>FOR MONTH</th><th>PAYMENT DATE</th><th>AMOUNT</th><th>NOTES</th></tr></thead>
+            <tbody>{pageSlice(filteredHistory, historyPage).map((row) => <tr key={row.payment_id}>
+              <td><b>{row.student_name}</b>{row.rfid && <div className="sub-cell">RFID {row.rfid}</div>}</td>
+              <td>{row.class_name}</td><td>{row.teacher_name}</td><td>{row.for_month}</td><td>{prettyDate(row.payment_date)}</td><td><b>{money(row.amount_paid)}</b></td><td>{row.notes || "—"}</td>
+            </tr>)}</tbody>
+          </table></div>
+          <Pagination count={filteredHistory.length} page={historyPage} setPage={setHistoryPage} />
+        </> : !history.error && <div className="payout-empty">No student payments match these filters.</div>}
+      </section>
+      <section className="panel data-panel payout-panel">
+        <div className="report-heading"><div><h2>Pending payments · {month}</h2><p>Outstanding student fees, always available at the end of the report.</p></div></div>
+        {pendingRecords.error && <div className="error-inline">{pendingRecords.error}</div>}
+        <TableToolbar count={filteredPending.length} placeholder="Search pending students, RFID or class…" query={pendingQuery} setQuery={(value) => { setPendingQuery(value); setPendingPage(1); }} />
+        {filteredPending.length ? <>
+          <div className="table-wrap"><table>
+            <thead><tr><th>STUDENT</th><th>CLASS</th><th>TEACHER</th><th>MONTH</th><th>AMOUNT DUE</th></tr></thead>
+            <tbody>{pageSlice(filteredPending, pendingPage).map((row) => <tr key={row.enrollment_id}><td><b>{row.student_name}</b>{row.rfid && <div className="sub-cell">RFID {row.rfid}</div>}</td><td>{row.class_name}</td><td>{row.teacher_name}</td><td>{month}</td><td><b className="pending-amount">{money(row.amount_due)}</b></td></tr>)}</tbody>
+          </table></div>
+          <Pagination count={filteredPending.length} page={pendingPage} setPage={setPendingPage} />
+        </> : !pendingRecords.error && <div className="payout-empty">{pendingQuery ? "No pending payments match this search." : `No pending payments for ${month}.`}</div>}
+      </section>
+      <section className="panel data-panel payout-panel">
+        <div className="report-heading"><div><h2>Student attendance</h2><p>Present and absent records during {month}.</p></div></div>
+        {attendance.error && <div className="error-inline">{attendance.error}</div>}
+        {attendance.data?.length ? (
+          <div className="table-wrap"><table>
+            <thead><tr><th>STUDENT</th><th>CLASS</th><th>DATE</th><th>ATTENDANCE</th></tr></thead>
+            <tbody>{attendance.data.map((row) => (
+              <tr key={row.attendance_id}><td><b>{row.student_name}</b></td><td>{row.class_name}</td><td>{prettyDate(row.session_date)}</td><td><Status value={row.status} /></td></tr>
+            ))}</tbody>
+          </table></div>
+        ) : !attendance.error && <div className="payout-empty">No attendance records found for this month.</div>}
+      </section>
+      </>
+      )}
+      <div className="print-report">
+        <header><h1>{user.organization}</h1><p>Tuition payment and teacher payout report</p><span>Generated {prettyDate(today())} · Report month {month}</span></header>
+        <h2>Student payment records</h2>
+        <table><thead><tr><th>Student</th><th>Class</th><th>Teacher</th><th>For month</th><th>Payment date</th><th>Amount</th><th>Notes</th></tr></thead>
+          <tbody>{filteredHistory.map((row) => <tr key={row.payment_id}><td>{row.student_name}</td><td>{row.class_name}</td><td>{row.teacher_name}</td><td>{row.for_month}</td><td>{row.payment_date}</td><td>{money(row.amount_paid)}</td><td>{row.notes || "—"}</td></tr>)}</tbody>
+        </table>
+        <h2>Teacher payout records</h2>
+        <table><thead><tr><th>Teacher</th><th>Date</th><th>Classes / months</th><th>Notes</th><th>Amount</th></tr></thead>
+          <tbody>{filteredPayouts.map((row) => <tr key={row.payout_id}><td>{row.teacher_name}</td><td>{row.payout_date}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td>{money(row.amount)}</td></tr>)}</tbody>
+        </table>
+        <h2>Pending payments for {month}</h2>
+        <table><thead><tr><th>Student</th><th>Class</th><th>Teacher</th><th>Amount due</th></tr></thead>
+          <tbody>{filteredPending.map((row) => <tr key={row.enrollment_id}><td>{row.student_name}</td><td>{row.class_name}</td><td>{row.teacher_name}</td><td>{money(row.amount_due)}</td></tr>)}</tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -2257,17 +2795,44 @@ function ModalHost({
     ) : modal.type === "student-detail" ? (
       <StudentDetail
         student={modal.student}
+        initialSelectedFees={modal.selectedFees}
         version={version}
         close={close}
         setModal={setModal}
         refresh={refresh}
-        notify={notify}
       />
     ) : modal.type === "session" ? (
       <SessionModal
         session={modal.session}
         close={close}
         refresh={refresh}
+        notify={notify}
+        setModal={setModal}
+      />
+    ) : modal.type === "payment-review" ? (
+      <PaymentReview
+        rows={modal.rows}
+        month={modal.month}
+        sessionId={modal.session_id}
+        onComplete={modal.session ? () => {
+          refresh();
+          setModal({ type: "session", session: modal.session });
+        } : null}
+        close={close}
+        finish={finish}
+        notify={notify}
+      />
+    ) : modal.type === "student-fee-review" ? (
+      <StudentFeeReview
+        fees={modal.fees}
+        studentName={modal.studentName}
+        revise={() => setModal({
+          type: "student-detail",
+          student: modal.student,
+          selectedFees: modal.fees.map((fee) => `${fee.enrollment_id}:${fee.month}`),
+        })}
+        close={close}
+        finish={finish}
         notify={notify}
       />
     ) : modal.type === "payout-form" ? (
@@ -2289,7 +2854,11 @@ function ModalHost({
         if (event.target === event.currentTarget) close();
       }}
     >
-      <div className="modal-window" role="dialog" aria-modal="true">
+      <div
+        className={`modal-window ${["session", "class-detail", "class-form", "enrollment-form"].includes(modal.type) ? "modal-window-wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+      >
         {body}
       </div>
     </div>
@@ -2333,6 +2902,115 @@ function ModalActions({ close, saving, label = "Save changes" }) {
         <ArrowRight size={15} />
       </Button>
     </div>
+  );
+}
+
+function PaymentReview({ rows, month, sessionId, onComplete, close, finish, notify }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const total = rows.reduce((sum, row) => sum + Number(row.due_amount || 0), 0);
+  const confirm = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await api.payments.pay({
+        enrollment_ids: rows.map((row) => row.enrollment_id),
+        month,
+        session_id: sessionId,
+      });
+      notify(`${rows.length} payment${rows.length === 1 ? "" : "s"} recorded.`);
+      if (onComplete) onComplete();
+      else finish();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <>
+      <ModalTitle
+        eyebrow="REVIEW BEFORE RECORDING"
+        title="Confirm tuition payments"
+        description={`Review the ${month} payment details. Choose Revise to return to the list without recording anything.`}
+        close={close}
+      />
+      <div className="payment-review-content">
+        <div className="payment-review-list">
+          {rows.map((row) => (
+            <div className="payment-review-row" key={row.enrollment_id}>
+              <div>
+                <b>{row.name}</b>
+                <span>{row.class_name}</span>
+              </div>
+              <b>{money(row.due_amount)}</b>
+            </div>
+          ))}
+        </div>
+        <div className="payment-review-total">
+          <span>{rows.length} fee{rows.length === 1 ? "" : "s"} · {month}</span>
+          <b>{money(total)}</b>
+        </div>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <Button kind="secondary" onClick={close} disabled={saving}>
+            Revise selection
+          </Button>
+          <Button onClick={confirm} disabled={saving}>
+            {saving ? "Recording…" : "Confirm and record"}
+            <Check size={15} />
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function StudentFeeReview({ fees, studentName, revise, close, finish, notify }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const total = fees.reduce((sum, fee) => sum + Number(fee.amount || 0), 0);
+  const confirm = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await api.students.payFees(fees.map((fee) => ({
+        enrollment_id: fee.enrollment_id,
+        month: fee.month,
+      })));
+      notify("Selected tuition payments recorded.");
+      finish();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <>
+      <ModalTitle
+        eyebrow="REVIEW BEFORE RECORDING"
+        title="Review student payments"
+        description={`Check the selected class fees for ${studentName}. Revise returns to the profile without saving.`}
+        close={close}
+      />
+      <div className="payment-review-content">
+        <div className="payment-review-list">
+          {fees.map((fee) => (
+            <div className="payment-review-row" key={`${fee.enrollment_id}-${fee.month}`}>
+              <div><b>{fee.class_name}</b><span>{fee.month}</span></div>
+              <b>{money(fee.amount)}</b>
+            </div>
+          ))}
+        </div>
+        <div className="payment-review-total"><span>{studentName} · {fees.length} fee{fees.length === 1 ? "" : "s"}</span><b>{money(total)}</b></div>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <Button kind="secondary" onClick={revise} disabled={saving}>Revise selection</Button>
+          <Button onClick={confirm} disabled={saving}>{saving ? "Recording…" : "Confirm and record"}<Check size={15} /></Button>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -2787,6 +3465,8 @@ function EnrollmentForm({ version, close, finish, notify }) {
   );
   const [selected, setSelected] = useState([]);
   const [discounts, setDiscounts] = useState({});
+  const [studentQuery, setStudentQuery] = useState("");
+  const [studentPage, setStudentPage] = useState(1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const classItem = (classes || []).find(
@@ -2800,6 +3480,12 @@ function EnrollmentForm({ version, close, finish, notify }) {
           enrollment.stid === student.stid && enrollment.status === "active",
       ),
   );
+  const matchingStudents = available.filter((student) =>
+    `${student.name} ${student.rfid || ""}`
+      .toLowerCase()
+      .includes(studentQuery.trim().toLowerCase()),
+  );
+  const visibleStudents = pageSlice(matchingStudents, studentPage);
   const fee = (discount) =>
     roundMoney(Number(classItem?.fee || 0) * (1 - Number(discount || 0) / 100));
   const teacherShare = (discount) =>
@@ -2850,6 +3536,8 @@ function EnrollmentForm({ version, close, finish, notify }) {
             setClassId(event.target.value);
             setSelected([]);
             setDiscounts({});
+            setStudentQuery("");
+            setStudentPage(1);
             setError("");
           }}
           options={[
@@ -2885,9 +3573,21 @@ function EnrollmentForm({ version, close, finish, notify }) {
                 the amount the student pays.
               </small>
             </div>
+            <div className="table-search enrollment-search">
+              <Search size={16} />
+              <input
+                aria-label="Search students by name or RFID"
+                placeholder="Search students by name or RFID…"
+                value={studentQuery}
+                onChange={(event) => {
+                  setStudentQuery(event.target.value);
+                  setStudentPage(1);
+                }}
+              />
+            </div>
             <div className="enroll-options enrollment-form-options">
-              {available.length ? (
-                available.map((student) => {
+              {matchingStudents.length ? (
+                visibleStudents.map((student) => {
                   const discount = Number(discounts[student.stid] || 0);
                   const payable = fee(discount);
                   const teacher = teacherShare(discount);
@@ -2949,12 +3649,21 @@ function EnrollmentForm({ version, close, finish, notify }) {
                 })
               ) : (
                 <p className="roster-empty">
-                  {students?.length
-                    ? "Every active student is already enrolled in this class."
-                    : "Add students before enrolling them in a class."}
+                  {studentQuery
+                    ? "No active student matches that name or RFID."
+                    : students?.length
+                      ? "Every active student is already enrolled in this class."
+                      : "Add students before enrolling them in a class."}
                 </p>
               )}
             </div>
+            {matchingStudents.length > 0 && (
+              <Pagination
+                count={matchingStudents.length}
+                page={studentPage}
+                setPage={setStudentPage}
+              />
+            )}
           </>
         )}
         {error && <div className="form-error">{error}</div>}
@@ -2979,6 +3688,10 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
   );
   const { data: students } = useLoad(() => api.students.list(), [version]);
   const [discounts, setDiscounts] = useState({});
+  const [rosterQuery, setRosterQuery] = useState("");
+  const [rosterPage, setRosterPage] = useState(1);
+  const [candidateQuery, setCandidateQuery] = useState("");
+  const [candidatePage, setCandidatePage] = useState(1);
   const [saving, setSaving] = useState(false);
   const [editingDiscount, setEditingDiscount] = useState(null);
   const [editValue, setEditValue] = useState("");
@@ -2989,11 +3702,31 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
         (e) => e.stid === student.stid && e.status === "active",
       ),
   );
+  const activeEnrollments = (detail?.enrollments || []).filter((e) => e.status === "active");
+  const filteredEnrollments = activeEnrollments.filter((enrollment) =>
+    `${enrollment.name} ${enrollment.rfid || ""}`.toLowerCase().includes(rosterQuery.toLowerCase()),
+  );
+  const filteredCandidates = available.filter((student) =>
+    `${student.name} ${student.rfid || ""}`.toLowerCase().includes(candidateQuery.toLowerCase()),
+  );
+  const visibleCandidates = pageSlice(filteredCandidates, candidatePage);
   const [selected, setSelected] = useState([]);
   const feeFor = (discount) =>
     roundMoney(Number(classItem.fee) * (1 - Number(discount || 0) / 100));
   const shareFor = (discount, commission) =>
     roundMoney((feeFor(discount) * Number(commission || 0)) / 100);
+  const exportEnrolledStudents = () => {
+    downloadCsv(
+      `${classItem.class_name.trim().replace(/[^\w-]+/g, "_")}_students.csv`,
+      ["Class", "Student name", "RFID", "Discount percentage"],
+      activeEnrollments.map((enrollment) => [
+        classItem.class_name,
+        enrollment.name,
+        enrollment.rfid || "",
+        enrollment.discount_percentage,
+      ]),
+    );
+  };
   const saveEnrollments = async () => {
     setSaving(true);
     try {
@@ -3049,25 +3782,36 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
       />
       {error && <div className="error-inline">{error}</div>}
       <div className="class-detail-content">
+        <div className="class-detail-columns">
+        <section className="class-roster-column">
         <div className="roster-heading">
           <b>
             Enrolled students{" "}
             <span className="roster-count">
-              {detail?.enrollments.filter((e) => e.status === "active")
-                .length || 0}
+              {activeEnrollments.length}
             </span>
           </b>
-          <button
-            className="text-link"
-            onClick={() => setModal({ type: "class-form", classItem })}
-          >
-            Edit class
-          </button>
+          <div className="heading-actions">
+            <Button kind="secondary" icon={Download} onClick={exportEnrolledStudents} disabled={!activeEnrollments.length}>Export students</Button>
+            <button className="text-link" onClick={() => setModal({ type: "class-form", classItem })}>Edit class</button>
+          </div>
         </div>
+        {activeEnrollments.length > 0 && (
+          <div className="table-search roster-search">
+            <Search size={15} />
+            <input
+              aria-label="Search enrolled students by name or RFID"
+              placeholder="Search enrolled students by name or RFID…"
+              value={rosterQuery}
+              onChange={(event) => {
+                setRosterQuery(event.target.value);
+                setRosterPage(1);
+              }}
+            />
+          </div>
+        )}
         <div className="roster-list">
-          {detail?.enrollments
-            .filter((e) => e.status === "active")
-            .map((enrollment) => (
+          {filteredEnrollments.length ? pageSlice(filteredEnrollments, rosterPage).map((enrollment) => (
               <div
                 className="roster-row roster-discount-row"
                 key={enrollment.enrollment_id}
@@ -3157,11 +3901,16 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
                   <X size={16} />
                 </button>
               </div>
-            ))}
+          )) : <p className="roster-empty">No enrolled student matches this search.</p>}
         </div>
-        {!detail?.enrollments.filter((e) => e.status === "active").length && (
+        {activeEnrollments.length > 0 && (
+          <Pagination count={filteredEnrollments.length} page={rosterPage} setPage={setRosterPage} />
+        )}
+        {activeEnrollments.length === 0 && (
           <p className="roster-empty">No students are enrolled yet.</p>
         )}
+        </section>
+        <section className="class-enrollment-column">
         <div className="enroll-box">
           <div className="enroll-box-heading">
             <div>
@@ -3173,9 +3922,21 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
             </div>
             <span className="base-fee">Full fee {money(classItem.fee)}</span>
           </div>
-          {available.length ? (
+          <div className="table-search enrollment-search">
+            <Search size={15} />
+            <input
+              aria-label="Search available students by name or RFID"
+              placeholder="Search students by name or RFID…"
+              value={candidateQuery}
+              onChange={(event) => {
+                setCandidateQuery(event.target.value);
+                setCandidatePage(1);
+              }}
+            />
+          </div>
+          {filteredCandidates.length ? (
             <div className="enroll-options">
-              {available.map((student) => {
+              {visibleCandidates.map((student) => {
                 const discount = Number(discounts[student.stid] || 0);
                 const fee = feeFor(discount);
                 const teacher = shareFor(
@@ -3239,8 +4000,13 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
             </div>
           ) : (
             <p className="roster-empty">
-              All active students are enrolled, or there are no students yet.
+              {candidateQuery
+                ? "No available student matches that name or RFID."
+                : "All active students are enrolled, or there are no students yet."}
             </p>
+          )}
+          {filteredCandidates.length > PAGE_SIZE && (
+            <Pagination count={filteredCandidates.length} page={candidatePage} setPage={setCandidatePage} />
           )}
           <Button
             onClick={saveEnrollments}
@@ -3249,6 +4015,8 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
             {saving ? "Enrolling…" : `Enroll ${selected.length || ""} selected`}
           </Button>
         </div>
+        </section>
+        </div>
       </div>
     </>
   );
@@ -3256,11 +4024,11 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
 
 function StudentDetail({
   student: initial,
+  initialSelectedFees = [],
   version,
   close,
   setModal,
   refresh,
-  notify,
 }) {
   const [student, setStudent] = useState(initial);
   const [card, setCard] = useState("");
@@ -3269,7 +4037,9 @@ function StudentDetail({
     () => api.students.fees(student.stid),
     [student.stid, version],
   );
-  const [selectedFees, setSelectedFees] = useState([]);
+  const [selectedFees, setSelectedFees] = useState(initialSelectedFees);
+  const [feeQuery, setFeeQuery] = useState("");
+  const [feePage, setFeePage] = useState(1);
   const feeRows = (enrollments || [])
     .flatMap((enrollment) =>
       monthRange(enrollment.enrolled_date.slice(0, 7), thisMonth()).map(
@@ -3290,12 +4060,20 @@ function StudentDetail({
         a.class_name.localeCompare(b.class_name),
     );
   const unpaidFees = feeRows.filter((row) => !row.paid);
+  const filteredFeeRows = feeRows.filter((row) =>
+    `${row.class_name} ${row.month}`.toLowerCase().includes(feeQuery.toLowerCase()),
+  );
   const assign = async () => {
     setError("");
     try {
+      const assignedCard = card.trim();
+      if (!assignedCard) {
+        setError("Scan or enter an RFID card number.");
+        return;
+      }
       let result = await api.students.assignRfid({
         stid: student.stid,
-        rfid: card,
+        rfid: assignedCard,
       });
       if (result.conflict) {
         if (
@@ -3306,13 +4084,14 @@ function StudentDetail({
           return;
         result = await api.students.assignRfid({
           stid: student.stid,
-          rfid: card,
+          rfid: assignedCard,
           reassign: true,
         });
       }
       if (result.success) {
-        setStudent({ ...student, rfid: card });
+        setStudent({ ...student, rfid: assignedCard });
         setCard("");
+        refresh();
       }
     } catch (err) {
       setError(err.message);
@@ -3320,25 +4099,25 @@ function StudentDetail({
   };
   const remove = async () => {
     try {
-      await api.students.removeRfid(student.stid);
+      const removed = await api.students.removeRfid(student.stid);
+      if (!removed) throw new Error("The RFID card could not be removed.");
       setStudent({ ...student, rfid: null });
+      refresh();
     } catch (err) {
       setError(err.message);
     }
   };
-  const paySelected = async () => {
-    try {
-      await api.students.payFees(
-        selectedFees.map((key) => {
-          const [enrollment_id, month] = key.split(":");
-          return { enrollment_id: Number(enrollment_id), month };
-        }),
-      );
-      notify("Selected tuition payments recorded.");
-      setSelectedFees([]);
-      refresh();
-    } catch (err) {
-      notify(err.message, "error");
+  const paySelected = () => {
+    const selectedRows = feeRows.filter((row) =>
+      selectedFees.includes(`${row.enrollment_id}:${row.month}`),
+    );
+    if (selectedRows.length) {
+      setModal({
+        type: "student-fee-review",
+        fees: selectedRows,
+        studentName: student.name,
+        student,
+      });
     }
   };
   const monthLabel = (month) =>
@@ -3445,9 +4224,23 @@ function StudentDetail({
             </button>
           )}
         </div>
+        {feeRows.length > 0 && (
+          <div className="table-search student-fee-search">
+            <Search size={15} />
+            <input
+              aria-label="Search student payment history"
+              placeholder="Search class or month…"
+              value={feeQuery}
+              onChange={(event) => {
+                setFeeQuery(event.target.value);
+                setFeePage(1);
+              }}
+            />
+          </div>
+        )}
         {feeRows.length ? (
           <div className="student-fee-list">
-            {feeRows.map((row) => {
+            {filteredFeeRows.length ? pageSlice(filteredFeeRows, feePage).map((row) => {
               const key = `${row.enrollment_id}:${row.month}`;
               return (
                 <label
@@ -3481,7 +4274,7 @@ function StudentDetail({
                   </b>
                 </label>
               );
-            })}
+            }) : <p className="roster-empty">No payment records match this search.</p>}
           </div>
         ) : (
           <p className="roster-empty">
@@ -3489,6 +4282,9 @@ function StudentDetail({
               ? "No monthly fees due yet."
               : "No active class enrolments yet."}
           </p>
+        )}
+        {filteredFeeRows.length > 0 && (
+          <Pagination count={filteredFeeRows.length} page={feePage} setPage={setFeePage} />
         )}
         <div className="student-profile-pay">
           <span>
@@ -3508,11 +4304,16 @@ function StudentDetail({
   );
 }
 
-function SessionModal({ session, close, refresh, notify }) {
+function SessionModal({ session, close, refresh, notify, setModal }) {
   const [rows, setRows] = useState(null);
   const [status, setStatus] = useState(session.status);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
+  const [rosterPage, setRosterPage] = useState(1);
+  const [selectedStudentId, setSelectedStudentId] = useState(null);
+  const [paymentInProgress, setPaymentInProgress] = useState(false);
+  const scanInput = useRef(null);
+  const scanning = useRef(false);
   const load = useCallback(async () => {
     const result = await api.sessions.attendance(session.session_id);
     setRows(result);
@@ -3520,6 +4321,9 @@ function SessionModal({ session, close, refresh, notify }) {
   useEffect(() => {
     load().catch((err) => notify(err.message, "error"));
   }, [load]);
+  useEffect(() => {
+    if (status === "ongoing") window.requestAnimationFrame(() => scanInput.current?.focus());
+  }, [status]);
   const start = async () => {
     setBusy(true);
     try {
@@ -3548,9 +4352,11 @@ function SessionModal({ session, close, refresh, notify }) {
       return false;
     }
   };
-  const scanCard = async () => {
+  const scanCard = async (value = query.trim()) => {
+    if (!value || scanning.current) return;
+    scanning.current = true;
     try {
-      const student = await api.students.byRfid(query.trim());
+      const student = await api.students.byRfid(value);
       if (!student) {
         notify("No active student has that RFID card.", "error");
         return;
@@ -3560,32 +4366,52 @@ function SessionModal({ session, close, refresh, notify }) {
         notify(`${student.name} is not enrolled in this class.`, "error");
         return;
       }
+      setSelectedStudentId(attendee.stid);
       if (status !== "ongoing") {
         notify(
           `${student.name} is on the register. Start the session to mark attendance.`,
         );
         return;
       }
-      if (attendee.status !== "present" && (await mark(attendee, "present")))
+      if (attendee.status !== "present" && (await mark(attendee, "present"))) {
         notify(`${student.name} marked present.`);
+      } else if (attendee.status === "present") {
+        notify(`${student.name} is already marked present.`);
+      }
       setQuery("");
     } catch (err) {
       notify(err.message, "error");
+    } finally {
+      setQuery("");
+      scanning.current = false;
+      window.requestAnimationFrame(() => scanInput.current?.focus());
     }
   };
-  const pay = async (row) => {
-    try {
-      await api.payments.pay({
-        enrollment_ids: [row.enrollment_id],
-        month: thisMonth(),
-        session_id: session.session_id,
-      });
-      await load();
-      refresh();
-      notify(`Payment recorded for ${row.name}.`);
-    } catch (err) {
-      notify(err.message, "error");
+  const pay = (row) => {
+    if (paymentInProgress) return;
+    if (status !== "ongoing" || row.status !== "present") {
+      notify(
+        "Mark the student present in an open session before collecting payment.",
+        "error",
+      );
+      return;
     }
+    if (!row.enrollment_id) {
+      notify("This student has no active enrollment for this class.", "error");
+      return;
+    }
+    setPaymentInProgress(true);
+    setModal({
+      type: "payment-review",
+      rows: [{
+        ...row,
+        due_amount: Number(row.fee) * (1 - Number(row.discount_percentage || 0) / 100),
+        class_name: session.class_name,
+      }],
+      month: thisMonth(),
+      session_id: session.session_id,
+      session,
+    });
   };
   const end = async () => {
     if (
@@ -3610,6 +4436,12 @@ function SessionModal({ session, close, refresh, notify }) {
   const filtered = (rows || []).filter((row) =>
     `${row.name} ${row.rfid || ""}`.toLowerCase().includes(query.toLowerCase()),
   );
+  const visibleFiltered = pageSlice(filtered, rosterPage);
+  useEffect(() => setRosterPage(1), [query]);
+  const selectedStudent =
+    (rows || []).find((row) => row.stid === selectedStudentId) ||
+    (rows || [])[0] ||
+    null;
   return (
     <>
       <ModalTitle
@@ -3652,91 +4484,150 @@ function SessionModal({ session, close, refresh, notify }) {
           <div className="table-search">
             <Search size={15} />
             <input
+              ref={scanInput}
               placeholder="Search name or scan RFID…"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && scanCard()}
+              onChange={(event) => {
+                const value = event.target.value;
+                setQuery(value);
+                const scannedStudent = (rows || []).find(
+                  (row) =>
+                    row.rfid &&
+                    row.rfid.trim().toLowerCase() === value.trim().toLowerCase(),
+                );
+                if (scannedStudent && status === "ongoing") scanCard(value.trim());
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  scanCard();
+                }
+              }}
             />
           </div>
         </div>
-        {rows?.length ? (
-          <div className="session-roster">
-            {filtered.map((row) => (
-              <div className="session-student" key={row.stid}>
-                <Avatar name={row.name} />
-                <div className="session-student-name">
-                  <b>{row.name}</b>
-                  <span>
-                    {row.rfid ? `Card ${row.rfid}` : "No card assigned"}
-                  </span>
+        <div className="session-attendance-layout">
+          <div className="session-roster-column">
+            <div className="session-roster-heading">
+              <b>Students</b>
+              <span>{filtered.length} shown</span>
+            </div>
+            {rows?.length ? (
+              <div className="session-roster">
+                {filtered.length ? visibleFiltered.map((row) => (
+                  <button
+                    className={`session-student ${selectedStudent?.stid === row.stid ? "session-student-selected" : ""}`}
+                    key={row.stid}
+                    onClick={() => setSelectedStudentId(row.stid)}
+                  >
+                    <Avatar name={row.name} />
+                    <div className="session-student-name">
+                      <b>{row.name}</b>
+                      <span>{row.rfid ? `Card ${row.rfid}` : "No card assigned"}</span>
+                    </div>
+                    <Status value={row.status} />
+                  </button>
+                )) : <div className="session-no-roster">No students match this name or RFID.</div>}
+              </div>
+            ) : (
+              <div className="session-no-roster">
+                <Users size={19} />
+                <span>
+                  {status === "scheduled"
+                    ? "Start the session to prepare the attendance register."
+                    : "No active students are enrolled in this class."}
+                </span>
+              </div>
+            )}
+            {rows?.length > 0 && (
+              <Pagination count={filtered.length} page={rosterPage} setPage={setRosterPage} />
+            )}
+          </div>
+          <aside className="session-student-detail">
+            {selectedStudent ? (
+              <>
+                <div className="session-detail-person">
+                  <Avatar name={selectedStudent.name} />
+                  <div>
+                    <span>Selected student</span>
+                    <h3>{selectedStudent.name}</h3>
+                    <Status value={selectedStudent.status} />
+                  </div>
                 </div>
-                {status === "ongoing" ? (
-                  <div className="attendance-controls">
-                    <button
-                      className={`attendance-mark ${row.status === "present" ? "mark-present" : ""}`}
+                <div className="session-detail-fields">
+                  <div>
+                  <span>School</span>
+                  <b>{selectedStudent.school || "Not added"}</b>
+                  </div>
+                  <div>
+                  <span>Primary contact</span>
+                  <b>{selectedStudent.contact1 || "Not added"}</b>
+                  </div>
+                  {selectedStudent.contact2 && (
+                  <div>
+                    <span>Other contact</span>
+                    <b>{selectedStudent.contact2}</b>
+                  </div>
+                  )}
+                  <div>
+                  <span>Birthday</span>
+                  <b>{prettyDate(selectedStudent.birthday)}</b>
+                  </div>
+                  <div>
+                  <span>RFID card</span>
+                  <b>{selectedStudent.rfid || "Not assigned"}</b>
+                  </div>
+                  {selectedStudent.address && (
+                  <div>
+                    <span>Address</span>
+                    <b>{selectedStudent.address}</b>
+                  </div>
+                  )}
+                </div>
+                <div className="session-detail-actions">
+                  {status === "ongoing" && (
+                    <Button
                       onClick={() =>
                         mark(
-                          row,
-                          row.status === "present" ? "absent" : "present",
+                          selectedStudent,
+                          selectedStudent.status === "present" ? "absent" : "present",
                         )
                       }
-                      title={
-                        row.status === "present"
-                          ? "Mark absent"
-                          : "Mark present"
+                      disabled={busy}
+                    >
+                      <Check size={16} />
+                      {selectedStudent.status === "present" ? "Mark absent" : "Mark present"}
+                    </Button>
+                  )}
+                  {status === "ongoing" && selectedStudent.status === "present" && (
+                    <Button
+                      kind={selectedStudent.payment_id ? "secondary" : "alert"}
+                      onClick={() => !selectedStudent.payment_id && pay(selectedStudent)}
+                      disabled={
+                        Boolean(selectedStudent.payment_id) ||
+                        !selectedStudent.enrollment_id ||
+                        paymentInProgress
                       }
                     >
-                      <Check size={14} />
-                      <span>
-                        {row.status === "present"
-                          ? "Present"
-                          : row.status === "absent"
-                            ? "Absent"
-                            : "Mark present"}
-                      </span>
-                    </button>
-                    {row.status === "present" && (
-                      <button
-                        className={`payment-quick ${row.payment_id ? "payment-done" : ""}`}
-                        onClick={() => !row.payment_id && pay(row)}
-                        title={
-                          row.payment_id
-                            ? "Paid this month"
-                            : "Record monthly fee"
-                        }
-                      >
-                        {row.payment_id ? (
-                          <Check size={14} />
-                        ) : (
-                          <CreditCard size={14} />
-                        )}
-                        <span>
-                          {row.payment_id
-                            ? "Paid"
-                            : money(
-                                row.fee *
-                                  (1 - (row.discount_percentage || 0) / 100),
-                              )}
-                        </span>
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <Status value={row.status} />
-                )}
+                      {selectedStudent.payment_id ? <Check size={16} /> : <CreditCard size={16} />}
+                      {paymentInProgress
+                        ? "Saving payment…"
+                        : selectedStudent.payment_id
+                          ? "Paid this month"
+                          : `Mark as Paid ${money(selectedStudent.fee * (1 - (selectedStudent.discount_percentage || 0) / 100))}`}
+                    </Button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="session-detail-empty">
+                <Users size={24} />
+                <b>Student details</b>
+                <span>Select a student from the register or scan their RFID card.</span>
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="session-no-roster">
-            <Users size={19} />
-            <span>
-              {status === "scheduled"
-                ? "Start the session to prepare the attendance register."
-                : "No active students are enrolled in this class."}
-            </span>
-          </div>
-        )}
+            )}
+          </aside>
+        </div>
         {status === "ongoing" && (
           <div className="session-modal-footer">
             <span>
@@ -3763,14 +4654,26 @@ function PayoutForm({ close, finish, notify }) {
     details: [],
   });
   const [saving, setSaving] = useState(false);
+  const [review, setReview] = useState(false);
+  const [error, setError] = useState("");
+  const [classQuery, setClassQuery] = useState("");
+  const [classPage, setClassPage] = useState(1);
   const ownClasses = (classes || []).filter(
     (item) => String(item.tid) === form.tid,
   );
+  const matchingClasses = ownClasses.filter((item) =>
+    item.class_name.toLowerCase().includes(classQuery.toLowerCase()),
+  );
   const change = (key) => (event) =>
     setForm({ ...form, [key]: event.target.value });
-  const submit = async (event) => {
+  const submit = (event) => {
     event.preventDefault();
+    setError("");
+    setReview(true);
+  };
+  const recordPayout = async () => {
     setSaving(true);
+    setError("");
     try {
       await api.payouts.add({
         ...form,
@@ -3781,7 +4684,7 @@ function PayoutForm({ close, finish, notify }) {
       notify("Teacher payout recorded.");
       finish();
     } catch (err) {
-      notify(err.message, "error");
+      setError(err.message);
     } finally {
       setSaving(false);
     }
@@ -3790,11 +4693,28 @@ function PayoutForm({ close, finish, notify }) {
     <>
       <ModalTitle
         eyebrow="TEACHER PAYMENTS"
-        title="Record a payout"
-        description="Keep a clear record of the payments you make to teachers."
+        title={review ? "Review teacher payout" : "Record a payout"}
+        description={review ? "Check the teacher, amount, date and class details before recording." : "Keep a clear record of the payments you make to teachers."}
         close={close}
       />
       <form className="modal-form" onSubmit={submit}>
+        {review ? (
+          <div className="payment-review-content payout-review">
+            <div className="payment-review-row"><div><b>Teacher</b><span>{(teachers || []).find((teacher) => String(teacher.tid) === form.tid)?.name || "—"}</span></div></div>
+            <div className="payment-review-row"><div><b>Payment date</b><span>{prettyDate(form.payout_date)}</span></div><b>{money(form.amount)}</b></div>
+            {form.details.map((detail) => {
+              const className = ownClasses.find((item) => item.class_id === detail.class_id)?.class_name || "Class";
+              return <div className="payment-review-row" key={detail.class_id}><div><b>{className}</b><span>{detail.for_month}</span></div><b>{money(detail.amount_for_class)}</b></div>;
+            })}
+            {form.notes && <div className="payment-review-row"><div><b>Notes</b><span>{form.notes}</span></div></div>}
+            {error && <div className="form-error">{error}</div>}
+            <div className="modal-actions">
+              <Button kind="secondary" onClick={() => setReview(false)} disabled={saving}>Revise payout</Button>
+              <Button onClick={recordPayout} disabled={saving}>{saving ? "Recording…" : "Confirm and record"}<Check size={15} /></Button>
+            </div>
+          </div>
+        ) : (
+          <>
         <SelectField
           label="Teacher"
           required
@@ -3832,7 +4752,19 @@ function PayoutForm({ close, finish, notify }) {
             <span className="field-label">
               Optional: which class / month does this cover?
             </span>
-            {ownClasses.map((item) => {
+            <div className="table-search enrollment-search">
+              <Search size={15} />
+              <input
+                aria-label="Search payout classes"
+                placeholder="Search classes…"
+                value={classQuery}
+                onChange={(event) => {
+                  setClassQuery(event.target.value);
+                  setClassPage(1);
+                }}
+              />
+            </div>
+            {pageSlice(matchingClasses, classPage).map((item) => {
               const existing = form.details.find(
                 (d) => d.class_id === item.class_id,
               );
@@ -3907,6 +4839,12 @@ function PayoutForm({ close, finish, notify }) {
                 </div>
               );
             })}
+            {matchingClasses.length > 0 && (
+              <Pagination count={matchingClasses.length} page={classPage} setPage={setClassPage} />
+            )}
+            {classQuery && matchingClasses.length === 0 && (
+              <p className="roster-empty">No class matches this search.</p>
+            )}
           </div>
         )}
         <Field
@@ -3915,7 +4853,10 @@ function PayoutForm({ close, finish, notify }) {
           onChange={change("notes")}
           placeholder="Optional payment reference"
         />
-        <ModalActions close={close} saving={saving} label="Record payout" />
+        {error && <div className="form-error">{error}</div>}
+        <ModalActions close={close} saving={saving} label="Review payout" />
+          </>
+        )}
       </form>
     </>
   );

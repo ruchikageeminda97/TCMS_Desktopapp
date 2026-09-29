@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "exceljs": "^4.4.0",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -27,6 +28,11 @@
     "electron-builder": "^26.15.3",
     "vite": "^6.0.5",
     "wait-on": "^8.0.1"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   },
   "build": {
     "appId": "com.tcms.desktop",

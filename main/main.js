@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { openDatabase, getDatabase } = require('./database');
 const { slotIsAvailable, validateSlots } = require('./scheduling');
+const { createTemplateBuffer, parseExcelRecords } = require('./record-import');
 
 let window;
 let activeUser = null;
@@ -102,6 +103,49 @@ function registerIpc() {
     };
   });
   ipcMain.handle('students:list', scopedList('students', 'stid,rfid,name,school,contact1,contact2,birthday,address,status', 'name COLLATE NOCASE'));
+  ipcMain.handle('records:downloadTemplate', async (_event, kind) => {
+    const user = requireUser();
+    if (!['students', 'teachers'].includes(kind)) throw new Error('Choose student or teacher records.');
+    const label = kind === 'students' ? 'Student' : 'Teacher';
+    const result = await dialog.showSaveDialog(window, {
+      title: `Download ${label} Excel template`,
+      defaultPath: `${kind}-template.xlsx`,
+      filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }]
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    const filePath = result.filePath.toLowerCase().endsWith('.xlsx') ? result.filePath : `${result.filePath}.xlsx`;
+    fs.writeFileSync(filePath, Buffer.from(await createTemplateBuffer(kind)));
+    return { canceled: false, filePath };
+  });
+  ipcMain.handle('records:import', async (_event, kind) => {
+    const user = requireUser();
+    if (!['students', 'teachers'].includes(kind)) throw new Error('Choose student or teacher records.');
+    const label = kind === 'students' ? 'Student' : 'Teacher';
+    const result = await dialog.showOpenDialog(window, {
+      title: `Import ${label} records`,
+      properties: ['openFile'],
+      filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }]
+    });
+    if (result.canceled || !result.filePaths.length) return { canceled: true };
+    const filePath = result.filePaths[0];
+    const { size } = fs.statSync(filePath);
+    if (size > 20 * 1024 * 1024) throw new Error('Excel files must be 20 MB or smaller.');
+    const records = await parseExcelRecords(await fs.promises.readFile(filePath), kind);
+    const db = getDatabase();
+    const insertStudents = db.prepare(`INSERT INTO students
+      (oid,name,school,contact1,contact2,birthday,address,status) VALUES (?,?,?,?,?,?,?,?)`);
+    const insertTeachers = db.prepare(`INSERT INTO teachers
+      (oid,name,contact,address,description) VALUES (?,?,?,?,?)`);
+    db.transaction(() => records.forEach((record) => {
+      if (kind === 'students') {
+        insertStudents.run(user.oid, record.name, record.school || null, record.contact1, record.contact2 || null,
+          record.birthday, record.address || null, record.status);
+      } else {
+        insertTeachers.run(user.oid, record.name, record.contact || null, record.address || null, record.description || null);
+      }
+    }))();
+    return { canceled: false, count: records.length, fileName: path.basename(filePath) };
+  });
   ipcMain.handle('students:save', (_event, input) => {
     const db = getDatabase();
     const values = [String(input.name || '').trim(), String(input.school || ''), String(input.contact1 || '').trim(), String(input.contact2 || ''), input.birthday || null, String(input.address || ''), input.status === 'inactive' ? 'inactive' : 'active'];
@@ -172,7 +216,16 @@ function registerIpc() {
     return db.prepare(`SELECT h.hall_id,h.name,h.capacity,
       (SELECT COUNT(*) FROM classes c WHERE c.hall_id=h.hall_id AND c.oid=h.oid) AS class_count
       FROM halls h WHERE h.oid=? ORDER BY h.name COLLATE NOCASE`).all(org())
-      .map(hall => ({ ...hall, availability: db.prepare('SELECT availability_id,day_of_week,start_time,end_time FROM hall_availability WHERE hall_id=? ORDER BY day_of_week,start_time').all(hall.hall_id) }));
+      .map(hall => ({
+        ...hall,
+        availability: db.prepare('SELECT availability_id,day_of_week,start_time,end_time FROM hall_availability WHERE hall_id=? ORDER BY day_of_week,start_time').all(hall.hall_id),
+        bookings: db.prepare(`SELECT c.class_id,c.class_name,c.subject,s.day_of_week,s.start_time,s.end_time,
+          (SELECT COUNT(*) FROM class_enrollments e WHERE e.class_id=c.class_id AND e.status='active') AS student_count
+          FROM classes c JOIN class_schedules s ON s.class_id=c.class_id
+          WHERE c.hall_id=? AND c.oid=? AND c.status='active'
+          ORDER BY CASE s.day_of_week WHEN 'monday' THEN 1 WHEN 'tuesday' THEN 2 WHEN 'wednesday' THEN 3
+            WHEN 'thursday' THEN 4 WHEN 'friday' THEN 5 WHEN 'saturday' THEN 6 ELSE 7 END,s.start_time`).all(hall.hall_id, org())
+      }));
   });
   ipcMain.handle('halls:save', (_event, input) => {
     const db = getDatabase();
@@ -314,7 +367,7 @@ function registerIpc() {
     const db = getDatabase();
     const session = db.prepare('SELECT s.session_id,s.status,s.class_id,c.oid FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE s.session_id=? AND c.oid=?').get(sessionId, org());
     if (!session) throw new Error('Session not found.');
-    return db.prepare(`SELECT a.attendance_id,a.stid,a.status,a.marked_at,s.name,s.rfid,e.enrollment_id,e.discount_percentage,c.fee,
+    return db.prepare(`SELECT a.attendance_id,a.stid,a.status,a.marked_at,s.name,s.rfid,s.school,s.contact1,s.contact2,s.birthday,s.address,s.status AS student_status,e.enrollment_id,e.discount_percentage,c.fee,
       p.payment_id,p.amount_paid FROM attendance a JOIN students s ON s.stid=a.stid
       LEFT JOIN class_enrollments e ON e.class_id=? AND e.stid=a.stid
       LEFT JOIN classes c ON c.class_id=?
@@ -355,7 +408,7 @@ function registerIpc() {
       month,
       collected: db.prepare(`SELECT COALESCE(SUM(p.amount_paid),0) AS amount FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id JOIN classes c ON c.class_id=e.class_id WHERE c.oid=? AND p.for_month=?`).get(org(), month).amount,
       due: getPendingTotal(org(), month),
-      rows: db.prepare(`SELECT e.enrollment_id,e.stid,s.name,c.class_id,c.class_name,c.fee,e.discount_percentage,
+      rows: db.prepare(`SELECT e.enrollment_id,e.stid,s.name,s.rfid,c.class_id,c.class_name,c.fee,e.discount_percentage,
         ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS due_amount,p.payment_id,p.amount_paid,p.payment_date,p.payment_time,p.notes
         FROM class_enrollments e JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
         LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
@@ -423,9 +476,119 @@ function registerIpc() {
         JOIN classes c ON c.class_id=e.class_id WHERE c.tid=t.tid AND c.oid=t.oid),0) AS earned,
       COALESCE((SELECT SUM(p.amount) FROM teacher_payouts p WHERE p.tid=t.tid),0) AS paid_out
     FROM teachers t WHERE t.oid=? ORDER BY t.name`).all(org()).map(row => ({ ...row, outstanding: money(row.earned - row.paid_out) })));
-  ipcMain.handle('payouts:list', () => getDatabase().prepare(`SELECT p.payout_id,p.tid,t.name AS teacher_name,p.amount,p.payout_date,p.notes,
-    (SELECT GROUP_CONCAT(c.class_name || ' · ' || COALESCE(d.for_month,'all months'), ', ') FROM teacher_payout_details d JOIN classes c ON c.class_id=d.class_id WHERE d.payout_id=p.payout_id) AS details
-    FROM teacher_payouts p JOIN teachers t ON t.tid=p.tid WHERE t.oid=? ORDER BY p.payout_date DESC,p.payout_id DESC`).all(org()));
+  ipcMain.handle('reports:paymentRecords', (_event, filters = {}) => {
+    const db = getDatabase();
+    const clauses = ['c.oid=?', 's.oid=c.oid', 't.oid=c.oid'];
+    const params = [org()];
+    if (filters.month) {
+      if (!validMonth(filters.month)) throw new Error('Enter a valid payment month.');
+      clauses.push('p.for_month=?');
+      params.push(filters.month);
+    } else if (filters.year) {
+      const year = String(filters.year);
+      if (!/^\d{4}$/.test(year)) throw new Error('Enter a valid payment year.');
+      clauses.push('substr(p.for_month,1,4)=?');
+      params.push(year);
+    }
+    if (filters.start_month || filters.end_month) {
+      if (!validMonth(filters.start_month) || !validMonth(filters.end_month) || filters.start_month > filters.end_month) {
+        throw new Error('Choose a valid payment month range.');
+      }
+      clauses.push('p.for_month BETWEEN ? AND ?');
+      params.push(filters.start_month, filters.end_month);
+    }
+    if (filters.stid) {
+      const stid = Number(filters.stid);
+      if (!Number.isInteger(stid) || stid < 1) throw new Error('Choose a valid student.');
+      clauses.push('s.stid=?');
+      params.push(stid);
+    }
+    if (filters.class_id) {
+      clauses.push('c.class_id=?');
+      params.push(Number(filters.class_id));
+    }
+    return db.prepare(`SELECT p.payment_id,p.for_month,p.amount_paid,p.payment_date,p.payment_time,p.notes,
+      s.stid,s.name AS student_name,s.rfid,c.class_id,c.class_name,t.name AS teacher_name
+      FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+      JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
+      JOIN teachers t ON t.tid=c.tid
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY p.for_month DESC,p.payment_date DESC,s.name COLLATE NOCASE,c.class_name`).all(...params);
+  });
+  ipcMain.handle('reports:studentAttendance', (_event, filters = {}) => {
+    const clauses = ['c.oid=?', 's.oid=c.oid'];
+    const params = [org()];
+    if (filters.stid) {
+      const stid = Number(filters.stid);
+      if (!Number.isInteger(stid) || stid < 1) throw new Error('Choose a valid student.');
+      clauses.push('s.stid=?');
+      params.push(stid);
+    }
+    if (filters.start_month || filters.end_month) {
+      if (!validMonth(filters.start_month) || !validMonth(filters.end_month) || filters.start_month > filters.end_month) {
+        throw new Error('Choose a valid attendance month range.');
+      }
+      clauses.push("strftime('%Y-%m', se.session_date) BETWEEN ? AND ?");
+      params.push(filters.start_month, filters.end_month);
+    }
+    return getDatabase().prepare(`SELECT a.attendance_id,s.stid,s.name AS student_name,c.class_id,c.class_name,
+      se.session_date,a.status,a.marked_at
+      FROM attendance a JOIN sessions se ON se.session_id=a.session_id
+      JOIN classes c ON c.class_id=se.class_id
+      JOIN students s ON s.stid=a.stid
+      WHERE ${clauses.join(' AND ')} AND a.status IN ('present','absent')
+      ORDER BY se.session_date DESC,s.name COLLATE NOCASE,c.class_name`).all(...params);
+  });
+  ipcMain.handle('reports:pendingPayments', (_event, month = currentMonth()) => {
+    if (!validMonth(month) || month > currentMonth()) throw new Error('Choose a payment month up to the current month.');
+    return getDatabase().prepare(`SELECT e.enrollment_id,e.stid,s.name AS student_name,s.rfid,c.class_id,c.class_name,t.name AS teacher_name,
+      ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS amount_due
+      FROM class_enrollments e JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
+      JOIN teachers t ON t.tid=c.tid
+      LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
+      WHERE c.oid=? AND e.status='active' AND c.status='active' AND p.payment_id IS NULL
+        AND substr(e.enrolled_date,1,7)<=?
+      ORDER BY s.name COLLATE NOCASE,c.class_name`).all(month, org(), month);
+  });
+  ipcMain.handle('reports:exportPDF', async () => {
+    requireUser();
+    const choice = await dialog.showSaveDialog(window, {
+      title: 'Export tuition payment report',
+      defaultPath: `tuition_report_${today()}.pdf`,
+      filters: [{ name: 'PDF document', extensions: ['pdf'] }]
+    });
+    if (choice.canceled || !choice.filePath) return { canceled: true };
+    const filePath = choice.filePath.toLowerCase().endsWith('.pdf') ? choice.filePath : `${choice.filePath}.pdf`;
+    const pdf = await window.webContents.printToPDF({
+      pageSize: 'A4',
+      printBackground: true,
+      preferCSSPageSize: true,
+      margins: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 }
+    });
+    await fs.promises.writeFile(filePath, pdf);
+    return { canceled: false, filePath };
+  });
+  ipcMain.handle('payouts:list', (_event, filters = {}) => {
+    const clauses = ['t.oid=?'];
+    const params = [org()];
+    if (filters.tid) {
+      const tid = Number(filters.tid);
+      if (!Number.isInteger(tid) || tid < 1) throw new Error('Choose a valid teacher.');
+      clauses.push('p.tid=?');
+      params.push(tid);
+    }
+    if (filters.start_month || filters.end_month) {
+      if (!validMonth(filters.start_month) || !validMonth(filters.end_month) || filters.start_month > filters.end_month) {
+        throw new Error('Choose a valid payout month range.');
+      }
+      clauses.push("substr(p.payout_date,1,7) BETWEEN ? AND ?");
+      params.push(filters.start_month, filters.end_month);
+    }
+    return getDatabase().prepare(`SELECT p.payout_id,p.tid,t.name AS teacher_name,p.amount,p.payout_date,p.notes,
+    (SELECT GROUP_CONCAT(c.class_name || ' · ' || COALESCE(d.for_month,'all months'), ', ') FROM teacher_payout_details d JOIN classes c ON c.class_id=d.class_id WHERE d.payout_id=p.payout_id AND c.oid=t.oid) AS details
+    FROM teacher_payouts p JOIN teachers t ON t.tid=p.tid WHERE ${clauses.join(' AND ')}
+    ORDER BY p.payout_date DESC,p.payout_id DESC`).all(...params);
+  });
   ipcMain.handle('payouts:add', (_event, input) => {
     const db = getDatabase();
     const tid = Number(input.tid), amount = Number(input.amount);

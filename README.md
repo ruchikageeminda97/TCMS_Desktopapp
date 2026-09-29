@@ -14,15 +14,17 @@ The application database is saved in Electron’s application data folder, not i
 ## Build an installer
 
 - `npm run build` builds the renderer.
-- `npm test` runs the SQLite schema and fee/attendance regression tests.
+- `npm test` runs SQLite, fee/attendance, and Excel import/template regression tests.
 - `npm run test:electron` checks that SQLite loads in Electron’s runtime.
 - `npm run dist` builds a platform installer (`.exe`, `.dmg` or `.AppImage`) for the current operating system.
 
+Student and teacher pages include downloadable Excel templates and `.xlsx` import actions. Imports add new records to the current organization; student templates require a name and primary contact, and teacher templates require a name. Files may contain up to 5,000 records and must be no larger than 20 MB. The Payments page can be filtered to one student's unpaid class fees.
+
 ## Included workflows
 
-- Student and teacher records; student birth dates, contacts and RFID-card assignment/search.
+- Student and teacher records with Excel (`.xlsx`) import and downloadable templates; student birth dates, contacts and RFID-card assignment/search.
 - Class setup, weekly schedules, optional halls with editable weekly availability, student enrolments and individual fee discounts.
-- Session generation from the weekly timetable, attendance registers, RFID lookup, and automatic absent marking when a session ends.
+- Session generation from the weekly timetable, attendance registers with automatic RFID scanning and student details, and automatic absent marking when a session ends.
 - Monthly tuition collection from the payments screen or attendance register, with duplicate-payment protection.
 - Class earnings, outstanding fees, teacher commissions, organization shares and teacher-payout records.
 - Editable organization details and local SQLite backup/validated restore. Restore first makes a safety copy of the active database.

@@ -11,9 +11,15 @@ contextBridge.exposeInMainWorld('tuition', Object.freeze({
   students: {
     list: invoke('students:list'), save: invoke('students:save'), delete: invoke('students:delete'),
     assignRfid: invoke('students:assignRfid'), removeRfid: invoke('students:removeRfid'), byRfid: invoke('students:byRfid'),
-    fees: invoke('students:fees'), payFees: invoke('students:payFees')
+    fees: invoke('students:fees'), payFees: invoke('students:payFees'),
+    importExcel: () => ipcRenderer.invoke('records:import', 'students'),
+    downloadTemplate: () => ipcRenderer.invoke('records:downloadTemplate', 'students')
   },
-  teachers: { list: invoke('teachers:list'), save: invoke('teachers:save'), delete: invoke('teachers:delete') },
+  teachers: {
+    list: invoke('teachers:list'), save: invoke('teachers:save'), delete: invoke('teachers:delete'),
+    importExcel: () => ipcRenderer.invoke('records:import', 'teachers'),
+    downloadTemplate: () => ipcRenderer.invoke('records:downloadTemplate', 'teachers')
+  },
   halls: { list: invoke('halls:list'), save: invoke('halls:save'), delete: invoke('halls:delete') },
   classes: {
     list: invoke('classes:list'), detail: invoke('classes:detail'), save: invoke('classes:save'),
@@ -25,7 +31,14 @@ contextBridge.exposeInMainWorld('tuition', Object.freeze({
     start: invoke('sessions:start'), mark: invoke('sessions:mark'), end: invoke('sessions:end')
   },
   payments: { overview: invoke('payments:overview'), pay: invoke('payments:pay') },
-  reports: { classEarnings: invoke('reports:classEarnings'), teacherBalances: invoke('reports:teacherBalances') },
+  reports: {
+    classEarnings: invoke('reports:classEarnings'),
+    teacherBalances: invoke('reports:teacherBalances'),
+    paymentRecords: invoke('reports:paymentRecords'),
+    studentAttendance: invoke('reports:studentAttendance'),
+    pendingPayments: invoke('reports:pendingPayments'),
+    exportPDF: invoke('reports:exportPDF')
+  },
   payouts: { list: invoke('payouts:list'), add: invoke('payouts:add') },
   settings: { organization: invoke('settings:organization'), saveOrganization: invoke('settings:saveOrganization') },
   backup: { create: invoke('backup:create'), restore: invoke('backup:restore') }
