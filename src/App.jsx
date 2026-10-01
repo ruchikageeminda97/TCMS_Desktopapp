@@ -1574,7 +1574,11 @@ function ClassesPage({ version, setModal }) {
 
 function HallsPage({ version, setModal }) {
   const { data, error } = useLoad(() => api.halls.list(), [version]);
+  const [hallTab, setHallTab] = useState("calendar");
   const [query, setQuery] = useState("");
+  const [findDay, setFindDay] = useState("monday");
+  const [findStart, setFindStart] = useState("09:00");
+  const [findEnd, setFindEnd] = useState("10:00");
   const [page, setPage] = useState(1);
   const halls = (data || []).filter((hall) =>
     `${hall.name} ${hall.availability.map((slot) => slot.day_of_week).join(" ")}`
@@ -1583,6 +1587,13 @@ function HallsPage({ version, setModal }) {
   );
   const visibleHalls = pageSlice(halls, page);
   const weekDays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const availableHalls = halls.filter((hall) =>
+    findStart < findEnd
+    && hall.availability.some((slot) =>
+      slot.day_of_week === findDay && slot.start_time <= findStart && slot.end_time >= findEnd)
+    && !(hall.bookings || []).some((booking) =>
+      booking.day_of_week === findDay && findStart < booking.end_time && booking.start_time < findEnd),
+  );
   const availabilityText = (slots) =>
     slots.length
       ? slots
@@ -1604,6 +1615,13 @@ function HallsPage({ version, setModal }) {
           </Button>
         }
       />
+      <div className="report-tabs hall-tabs" role="tablist" aria-label="Hall sections">
+        <button type="button" role="tab" aria-selected={hallTab === "calendar"} className={hallTab === "calendar" ? "active" : ""} onClick={() => setHallTab("calendar")}>Availability calendar</button>
+        <button type="button" role="tab" aria-selected={hallTab === "find"} className={hallTab === "find" ? "active" : ""} onClick={() => setHallTab("find")}>Find availability</button>
+        <button type="button" role="tab" aria-selected={hallTab === "list"} className={hallTab === "list" ? "active" : ""} onClick={() => setHallTab("list")}>Halls list</button>
+      </div>
+      {error && <div className="error-inline">{error}</div>}
+      {hallTab === "list" && (
       <div className="panel data-panel">
         <TableToolbar
           count={halls.length}
@@ -1621,7 +1639,6 @@ function HallsPage({ version, setModal }) {
             <Plus size={14} /> Create class
           </button>
         </TableToolbar>
-        {error && <div className="error-inline">{error}</div>}
         {halls.length ? (
           <div className="table-wrap">
             <table>
@@ -1694,6 +1711,43 @@ function HallsPage({ version, setModal }) {
           <Pagination count={halls.length} page={page} setPage={setPage} />
         )}
       </div>
+      )}
+      {hallTab === "find" && (
+        <section className="panel hall-availability-search">
+          <div className="report-heading">
+            <div><h2>Find an available hall</h2><p>Choose a day and time to see rooms that are open and not already booked.</p></div>
+          </div>
+          <div className="hall-search-fields">
+            <label>Day
+              <select value={findDay} onChange={(event) => setFindDay(event.target.value)}>
+                {weekDays.map((day) => <option value={day} key={day}>{day[0].toUpperCase() + day.slice(1)}</option>)}
+              </select>
+            </label>
+            <label>From
+              <input type="time" value={findStart} onChange={(event) => setFindStart(event.target.value)} />
+            </label>
+            <label>Until
+              <input type="time" value={findEnd} onChange={(event) => setFindEnd(event.target.value)} />
+            </label>
+          </div>
+          {findStart >= findEnd ? (
+            <div className="form-error">Choose an end time later than the start time.</div>
+          ) : availableHalls.length ? (
+            <div className="hall-availability-results">
+              {availableHalls.map((hall) => (
+                <article className="hall-availability-result" key={hall.hall_id}>
+                  <div className="hall-icon"><DoorOpen size={17} /></div>
+                  <div><b>{hall.name}</b><span>{findDay[0].toUpperCase() + findDay.slice(1)} · {findStart}–{findEnd}</span></div>
+                  <span className="hall-capacity-badge">Capacity {hall.capacity || "Not set"}</span>
+                  <button className="small-action" onClick={() => setModal({ type: "hall-form", hall })}>Edit hall</button>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="payout-empty">No halls are available for this day and time. Try another time or add hall availability.</div>
+          )}
+        </section>
+      )}
       <div className="hall-guidance">
         <DoorOpen size={16} />
         <span>
@@ -1701,7 +1755,7 @@ function HallsPage({ version, setModal }) {
           use the same hall at overlapping times.
         </span>
       </div>
-      <section className="panel hall-calendar">
+      {hallTab === "calendar" && <section className="panel hall-calendar">
         <div className="report-heading">
           <div>
             <h2>Weekly hall availability</h2>
@@ -1745,7 +1799,7 @@ function HallsPage({ version, setModal }) {
             {!visibleHalls.length && <div className="hall-calendar-empty">No halls match the current search.</div>}
           </div>
         </div>
-      </section>
+      </section>}
     </div>
   );
 }
@@ -3152,7 +3206,7 @@ function ModalHost({
       }}
     >
       <div
-        className={`modal-window ${modal.type === "session" ? "session-modal-window" : ""} ${["session", "class-detail", "class-form", "enrollment-form"].includes(modal.type) ? "modal-window-wide" : ""}`}
+        className={`modal-window ${modal.type === "session" ? "session-modal-window" : ""} ${modal.type === "class-detail" ? "class-detail-window" : ""} ${modal.type === "class-form" ? "class-form-window" : ""} ${["session", "class-detail", "class-form", "enrollment-form"].includes(modal.type) ? "modal-window-wide" : ""}`}
         role="dialog"
         aria-modal="true"
       >
@@ -3628,15 +3682,21 @@ function ClassForm({ classItem, close, finish, notify }) {
         description="Set up a class, its fee and weekly timetable."
         close={close}
       />
-      <form className="modal-form modal-form-scroll" onSubmit={submit}>
-        <Field
-          label="Class name"
-          required
-          value={form.class_name}
-          onChange={change("class_name")}
-          placeholder="e.g. Grade 10 Mathematics"
-        />
-        <div className="form-two">
+      <form className="modal-form class-form-modal-form" onSubmit={submit}>
+        <div className="class-form-fields">
+          <Field
+            label="Class name"
+            required
+            value={form.class_name}
+            onChange={change("class_name")}
+            placeholder="e.g. Grade 10 Mathematics"
+          />
+          <Field
+            label="Subject"
+            value={form.subject}
+            onChange={change("subject")}
+            placeholder="e.g. Mathematics"
+          />
           <SelectField
             label="Teacher"
             required
@@ -3655,14 +3715,6 @@ function ClassForm({ classItem, close, finish, notify }) {
               })),
             ]}
           />
-          <Field
-            label="Subject"
-            value={form.subject}
-            onChange={change("subject")}
-            placeholder="e.g. Mathematics"
-          />
-        </div>
-        <div className="form-two">
           <Field
             label="Monthly fee"
             required
@@ -3684,19 +3736,19 @@ function ClassForm({ classItem, close, finish, notify }) {
             onChange={change("teacher_commission_percentage")}
             placeholder="0"
           />
+          <SelectField
+            label="Hall (optional)"
+            value={form.hall_id}
+            onChange={change("hall_id")}
+            options={[
+              { value: "", label: "No hall selected" },
+              ...(halls || []).map((h) => ({
+                value: String(h.hall_id),
+                label: `${h.name} · ${availabilityLabel(h.availability)}`,
+              })),
+            ]}
+          />
         </div>
-        <SelectField
-          label="Hall (optional)"
-          value={form.hall_id}
-          onChange={change("hall_id")}
-          options={[
-            { value: "", label: "No hall selected" },
-            ...(halls || []).map((h) => ({
-              value: String(h.hall_id),
-              label: `${h.name} · ${availabilityLabel(h.availability)}`,
-            })),
-          ]}
-        />
         <div className="schedule-editor">
           <div className="schedule-heading">
             <div>
@@ -3723,6 +3775,7 @@ function ClassForm({ classItem, close, finish, notify }) {
               <Plus size={14} /> Add time
             </button>
           </div>
+          <div className="class-schedule-grid">
           {form.schedules.map((row, index) => (
             <div className="schedule-row" key={index}>
               <select
@@ -3770,6 +3823,7 @@ function ClassForm({ classItem, close, finish, notify }) {
               </button>
             </div>
           ))}
+          </div>
         </div>
         {classItem && (
           <SelectField
@@ -4034,9 +4088,7 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
   const { data: students } = useLoad(() => api.students.list(), [version]);
   const [discounts, setDiscounts] = useState({});
   const [rosterQuery, setRosterQuery] = useState("");
-  const [rosterPage, setRosterPage] = useState(1);
   const [candidateQuery, setCandidateQuery] = useState("");
-  const [candidatePage, setCandidatePage] = useState(1);
   const [saving, setSaving] = useState(false);
   const [editingDiscount, setEditingDiscount] = useState(null);
   const [editValue, setEditValue] = useState("");
@@ -4054,7 +4106,6 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
   const filteredCandidates = available.filter((student) =>
     `${student.name} ${student.rfid || ""}`.toLowerCase().includes(candidateQuery.toLowerCase()),
   );
-  const visibleCandidates = pageSlice(filteredCandidates, candidatePage);
   const [selected, setSelected] = useState([]);
   const feeFor = (discount) =>
     roundMoney(Number(classItem.fee) * (1 - Number(discount || 0) / 100));
@@ -4126,6 +4177,12 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
         eyebrow={classItem.subject || "CLASS ROSTER"}
         title={classItem.class_name}
         description={`${classItem.teacher_name} · ${money(classItem.fee)} per month · ${classItem.teacher_commission_percentage}% teacher share`}
+        className="class-detail-title"
+        action={
+          <Button kind="secondary" icon={Download} onClick={exportPaymentRegister} disabled={paymentReportBusy}>
+            {paymentReportBusy ? "Preparing PDF…" : "Payment register PDF"}
+          </Button>
+        }
         close={close}
       />
       {error && <div className="error-inline">{error}</div>}
@@ -4139,12 +4196,7 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
               {activeEnrollments.length}
             </span>
           </b>
-          <div className="heading-actions">
-            <Button kind="secondary" icon={Download} onClick={exportPaymentRegister} disabled={paymentReportBusy}>
-              {paymentReportBusy ? "Preparing PDF…" : "Payment register PDF"}
-            </Button>
-            <button className="text-link" onClick={() => setModal({ type: "class-form", classItem })}>Edit class</button>
-          </div>
+          <button className="text-link" onClick={() => setModal({ type: "class-form", classItem })}>Edit class</button>
         </div>
         {activeEnrollments.length > 0 && (
           <div className="table-search roster-search">
@@ -4155,13 +4207,12 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
               value={rosterQuery}
               onChange={(event) => {
                 setRosterQuery(event.target.value);
-                setRosterPage(1);
               }}
             />
           </div>
         )}
         <div className="roster-list">
-          {filteredEnrollments.length ? pageSlice(filteredEnrollments, rosterPage).map((enrollment) => (
+          {filteredEnrollments.length ? filteredEnrollments.map((enrollment) => (
               <div
                 className="roster-row roster-discount-row"
                 key={enrollment.enrollment_id}
@@ -4253,9 +4304,6 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
               </div>
           )) : <p className="roster-empty">No enrolled student matches this search.</p>}
         </div>
-        {activeEnrollments.length > 0 && (
-          <Pagination count={filteredEnrollments.length} page={rosterPage} setPage={setRosterPage} />
-        )}
         {activeEnrollments.length === 0 && (
           <p className="roster-empty">No students are enrolled yet.</p>
         )}
@@ -4280,13 +4328,12 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
               value={candidateQuery}
               onChange={(event) => {
                 setCandidateQuery(event.target.value);
-                setCandidatePage(1);
               }}
             />
           </div>
           {filteredCandidates.length ? (
             <div className="enroll-options">
-              {visibleCandidates.map((student) => {
+              {filteredCandidates.map((student) => {
                 const discount = Number(discounts[student.stid] || 0);
                 const fee = feeFor(discount);
                 const teacher = shareFor(
@@ -4354,9 +4401,6 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
                 ? "No available student matches that name or RFID."
                 : "All active students are enrolled, or there are no students yet."}
             </p>
-          )}
-          {filteredCandidates.length > PAGE_SIZE && (
-            <Pagination count={filteredCandidates.length} page={candidatePage} setPage={setCandidatePage} />
           )}
           <Button
             onClick={saveEnrollments}
@@ -5409,7 +5453,11 @@ function PayoutForm({ close, finish, notify }) {
 function HallForm({ hall, close, finish, notify }) {
   const [name, setName] = useState(hall?.name || "");
   const [capacity, setCapacity] = useState(hall?.capacity || "");
-  const [availability, setAvailability] = useState(hall?.availability || []);
+  const [availability, setAvailability] = useState(() => hall?.availability || weekdays.map((day) => ({
+    day_of_week: day,
+    start_time: "07:00",
+    end_time: "23:00",
+  })));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const setSlot = (index, key, value) =>

@@ -544,6 +544,28 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
 .class-enrollment-column .enrollment-search{max-width:none}
 .class-enrollment-column .enroll-box>.button{margin-top:10px}
 .class-detail-columns .heading-actions{gap:10px;flex-wrap:wrap}
+.class-detail-window{height:min(92vh,900px);max-height:92vh;display:flex;flex-direction:column;overflow:hidden}
+.class-detail-window>.class-detail-title{flex:none;align-items:center}
+.class-detail-title>div:first-of-type{min-width:0}
+.class-detail-title .button{height:34px;padding:0 10px;font-size:12px;white-space:nowrap}
+.class-form-window{height:min(92vh,900px);max-height:92vh;display:flex;flex-direction:column;overflow:hidden}
+.class-form-window>.modal-title{flex:none}
+.class-form-modal-form{flex:1;min-height:0;overflow:hidden}
+.class-form-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
+.class-form-window .schedule-editor{display:flex;flex:1;flex-direction:column;min-height:0}
+.class-schedule-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start;gap:0 10px;min-height:0;overflow-y:auto}
+.class-form-window .schedule-row{display:grid;grid-template-columns:minmax(0,1fr) 76px auto 76px 30px;gap:5px}
+.class-form-window .schedule-row input{width:100%}
+.class-form-window .schedule-row .icon-button{width:30px;height:30px}
+.class-form-modal-form>.modal-actions{flex:none}
+.class-detail-content{flex:1;min-height:0;overflow:hidden}
+.class-detail-columns{height:100%;grid-template-rows:minmax(0,1fr);align-items:stretch}
+.class-roster-column,.class-enrollment-column{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.class-detail-window .table-search{flex:none;height:36px}
+.class-roster-column .roster-list{flex:0 1 auto;min-height:100px;max-height:min(52vh,460px);overflow-y:auto}
+.class-enrollment-column .enroll-box{display:flex;flex:1;flex-direction:column;min-height:0}
+.class-enrollment-column .enroll-options{flex:0 1 auto;min-height:100px;max-height:min(36vh,300px);overflow-y:auto}
+.class-enrollment-column .enroll-box>.button{flex:none;margin-top:auto}
 .search-select{position:relative;min-width:0;width:100%}
 .search-select>input{width:100%;height:36px;padding:0 10px;border:1px solid #e6e8ec;border-radius:7px;background:#fff;color:var(--ink);font-size:14px;outline:0}
 .search-select>input:focus{border-color:#9b89e7;box-shadow:0 0 0 3px #8b75e51a}
@@ -592,8 +614,12 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
   .daily-summary-actions label{flex:1}
   .daily-summary-actions input,.daily-summary-button{width:100%}
   .class-detail-columns{grid-template-columns:1fr}
-  .class-roster-column .roster-list{max-height:300px}
-  .class-enrollment-column .enroll-options{max-height:300px}
+  .class-detail-columns{grid-template-rows:repeat(2,minmax(0,1fr));gap:10px}
+  .class-detail-title{flex-wrap:wrap}
+  .class-detail-title>div:first-of-type{flex:1}
+  .class-detail-title .button{order:3;margin-left:auto}
+  .class-roster-column .roster-list,.class-enrollment-column .enroll-options{flex:1;max-height:none}
+  .class-schedule-grid{grid-template-columns:1fr}
   .history-filter-row{align-items:stretch}
   .history-filter-row>label,.history-filter-row .search-select{min-width:100%;width:100%}
   .table-toolbar .toolbar-search-select{width:100%;min-width:100%}
@@ -607,6 +633,7 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
   .class-detail-content{padding:11px}
   .class-roster-column,.class-enrollment-column{padding:10px}
   .class-detail-columns .heading-actions{align-items:flex-start}
+  .class-form-fields{grid-template-columns:1fr}
 }
 .button{height:42px;padding-left:16px;padding-right:16px;font-size:15px}
 .button-secondary{color:#465062;border-color:#c9ced7;background:#fff}
@@ -647,6 +674,18 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
 .calendar-legend{display:flex;align-items:center;gap:6px;color:#586171;font-size:12px;white-space:nowrap}
 .calendar-legend i{width:10px;height:10px;border-radius:3px;background:#f3b7bd}
 .hall-calendar-empty{grid-column:1/-1;padding:18px;color:#626b7a}
+.hall-tabs{margin-bottom:15px}
+.hall-availability-search{margin-bottom:14px}
+.hall-search-fields{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:0 15px 15px}
+.hall-search-fields label{display:flex;flex-direction:column;gap:5px;min-width:150px;color:#535968;font-size:12px;font-weight:650}
+.hall-search-fields select,.hall-search-fields input{height:36px;padding:0 9px;border:1px solid #e6e8ec;border-radius:7px;background:#fff;color:#515868;font-size:13px}
+.hall-availability-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;padding:0 15px 15px}
+.hall-availability-result{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid #dcefe1;border-radius:9px;background:#f5fbf6}
+.hall-availability-result>div:nth-child(2){min-width:0;flex:1;display:flex;flex-direction:column;gap:4px}
+.hall-availability-result>div:nth-child(2)>b{font-size:14px;color:#343b49}
+.hall-availability-result>div:nth-child(2)>span{font-size:12px;color:#737d89}
+.hall-capacity-badge{padding:5px 7px;border-radius:6px;background:#e6f3e8;color:#39774c;font-size:11px;font-weight:650;white-space:nowrap}
+@media(max-width:650px){.hall-search-fields{align-items:stretch;flex-direction:column}.hall-search-fields label{width:100%}.hall-availability-result{flex-wrap:wrap}.hall-availability-result .small-action{margin-left:auto}}
 .pending-amount{color:#a63d48}
 .report-heading{gap:12px}
 .report-heading h2{color:#2c3341}
