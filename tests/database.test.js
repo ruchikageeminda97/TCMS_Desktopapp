@@ -1,9 +1,12 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const test = require('node:test');
 const Database = require('better-sqlite3');
 const { overlaps, slotIsAvailable, validateSlots } = require('../main/scheduling');
+const { dueDateForMonth, overduePaymentMonths } = require('../main/payment-due');
+const { openDatabase } = require('../main/database');
 
 function createDatabase() {
   const db = new Database(':memory:');
@@ -27,8 +30,59 @@ test('schema creates the full tenant-scoped tuition management data model', () =
     for (const table of ['organizations', 'users', 'students', 'teachers', 'halls', 'hall_availability', 'classes', 'class_schedules', 'class_enrollments', 'sessions', 'attendance', 'payments', 'teacher_payouts', 'teacher_payout_details', 'backup_logs']) {
       assert.ok(tables.has(table), `missing ${table}`);
     }
+    const organizationColumns = new Set(db.pragma('table_info(organizations)').map(column => column.name));
+    assert.ok(organizationColumns.has('payment_due_day'));
+    const sessionColumns = new Set(db.pragma('table_info(sessions)').map(column => column.name));
+    assert.ok(sessionColumns.has('hall_id'));
+    assert.ok(sessionColumns.has('is_special'));
   } finally {
     db.close();
+  }
+});
+
+test('opening an existing database migrates sessions for special-session fields', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tcms-schema-migration-'));
+  const filePath = path.join(directory, 'legacy.db');
+  const legacy = new Database(filePath);
+  legacy.exec(`CREATE TABLE sessions (
+    session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    class_id INTEGER NOT NULL,
+    session_date TEXT NOT NULL,
+    start_time TEXT,
+    end_time TEXT,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (class_id, session_date, start_time)
+  );
+  CREATE TABLE organizations (
+    oid INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    contact TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE payment_due_dates (
+    due_date_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    oid INTEGER NOT NULL REFERENCES organizations(oid),
+    for_month TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    UNIQUE (oid, for_month)
+  );
+  INSERT INTO organizations (oid,name) VALUES (1,'Legacy Academy');
+  INSERT INTO payment_due_dates (oid,for_month,due_date) VALUES
+    (1,strftime('%Y-%m','now'),strftime('%Y-%m','now') || '-15')`);
+  legacy.close();
+  try {
+    const upgraded = openDatabase(filePath);
+    try {
+      const columns = new Set(upgraded.pragma('table_info(sessions)').map(column => column.name));
+      assert.ok(columns.has('hall_id'));
+      assert.ok(columns.has('is_special'));
+      assert.equal(upgraded.prepare('SELECT payment_due_day FROM organizations WHERE oid=1').get().payment_due_day, 15);
+    } finally {
+      upgraded.close();
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -112,6 +166,51 @@ test('sessions generate attendance rows and preserve absent/present register sta
     db.prepare("UPDATE attendance SET status='present' WHERE session_id=? AND stid=?").run(sessionId, student);
     assert.equal(db.prepare('SELECT status FROM attendance WHERE session_id=? AND stid=?').get(sessionId, student).status, 'present');
     assert.throws(() => db.prepare('INSERT INTO attendance (session_id,stid) VALUES (?,?)').run(sessionId, student), /UNIQUE constraint failed/);
+  } finally {
+    db.close();
+  }
+});
+
+test('monthly due day repeats, clamps to month end, and warns only after it passes unpaid', () => {
+  assert.equal(dueDateForMonth('2026-09', 10), '2026-09-10');
+  assert.equal(dueDateForMonth('2026-02', 31), '2026-02-28');
+  assert.equal(dueDateForMonth('2028-02', 31), '2028-02-29');
+  assert.throws(() => dueDateForMonth('2026-09', 0), /between 1 and 31/);
+  assert.throws(() => dueDateForMonth('2026-09', 32), /between 1 and 31/);
+  assert.deepEqual(overduePaymentMonths('2026-09-01', [], 10, '2026-09-09'), []);
+  assert.deepEqual(overduePaymentMonths('2026-09-01', [], 10, '2026-09-10'), [
+    { month: '2026-09', due_date: '2026-09-10' }
+  ]);
+  assert.deepEqual(
+    overduePaymentMonths('2026-01-01', ['2026-09'], 31, '2026-10-31'),
+    [
+      { month: '2026-01', due_date: '2026-01-31' },
+      { month: '2026-02', due_date: '2026-02-28' },
+      { month: '2026-03', due_date: '2026-03-31' },
+      { month: '2026-04', due_date: '2026-04-30' },
+      { month: '2026-05', due_date: '2026-05-31' },
+      { month: '2026-06', due_date: '2026-06-30' },
+      { month: '2026-07', due_date: '2026-07-31' },
+      { month: '2026-08', due_date: '2026-08-31' },
+      { month: '2026-10', due_date: '2026-10-31' }
+    ]
+  );
+});
+
+test('special sessions persist as one-time records with optional hall assignments', () => {
+  const db = createDatabase();
+  try {
+    const { organization, classId } = seed(db);
+    const hallId = db.prepare('INSERT INTO halls (oid,name) VALUES (?,?)').run(organization, 'Room A').lastInsertRowid;
+    const addSession = db.prepare(`INSERT INTO sessions
+      (class_id,session_date,start_time,end_time,hall_id,is_special) VALUES (?,?,?,?,?,1)`);
+    addSession.run(classId, '2026-09-15', '17:00', '19:00', hallId);
+    addSession.run(classId, '2026-09-20', '18:00', '20:00', null);
+    const sessions = db.prepare('SELECT session_date,start_time,end_time,hall_id,is_special FROM sessions ORDER BY session_date').all();
+    assert.deepEqual(sessions, [
+      { session_date: '2026-09-15', start_time: '17:00', end_time: '19:00', hall_id: hallId, is_special: 1 },
+      { session_date: '2026-09-20', start_time: '18:00', end_time: '20:00', hall_id: null, is_special: 1 }
+    ]);
   } finally {
     db.close();
   }

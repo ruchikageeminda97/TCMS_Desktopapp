@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS organizations (
   oid INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   contact TEXT,
+  payment_due_day INTEGER CHECK (payment_due_day BETWEEN 1 AND 31),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS users (
@@ -84,6 +85,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   session_date TEXT NOT NULL,
   start_time TEXT,
   end_time TEXT,
+  hall_id INTEGER REFERENCES halls(hall_id),
+  is_special INTEGER NOT NULL DEFAULT 0 CHECK (is_special IN (0,1)),
   status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','ongoing','completed','cancelled')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (class_id, session_date, start_time)

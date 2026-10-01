@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('tuition', Object.freeze({
   },
   sessions: {
     list: invoke('sessions:list'), generate: invoke('sessions:generate'), attendance: invoke('sessions:attendance'),
+    scheduleSpecial: invoke('sessions:scheduleSpecial'),
     start: invoke('sessions:start'), mark: invoke('sessions:mark'), end: invoke('sessions:end')
   },
   payments: { overview: invoke('payments:overview'), pay: invoke('payments:pay') },

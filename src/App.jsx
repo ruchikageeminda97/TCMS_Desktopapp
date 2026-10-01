@@ -902,7 +902,7 @@ function Dashboard({ version, refresh, setModal, notify }) {
     <div className="page-content">
       <PageHeading
         eyebrow={`${weekday}, YOUR WORKSPACE AT A GLANCE`}
-        title="Good day 👋"
+        title="Good day"
         subtitle="Here’s what’s happening at your tuition centre."
         action={
           <Button
@@ -1758,9 +1758,14 @@ function AttendancePage({ version, refresh, setModal, notify }) {
         title="Attendance"
         subtitle="Start a session, mark who’s here and let the register do the rest."
         action={
-          <Button icon={Plus} onClick={generate} disabled={generating}>
-            {generating ? "Checking timetable…" : "Generate sessions"}
-          </Button>
+          <div className="heading-actions">
+            <Button kind="secondary" icon={CalendarDays} onClick={() => setModal({ type: "special-session-form", date })}>
+              Add special session
+            </Button>
+            <Button icon={Plus} onClick={generate} disabled={generating}>
+              {generating ? "Checking timetable…" : "Generate sessions"}
+            </Button>
+          </div>
         }
       />
       <div className="date-toolbar panel">
@@ -1820,10 +1825,11 @@ function AttendancePage({ version, refresh, setModal, notify }) {
                 <div className="class-icon class-color-0">
                   <BookOpen size={17} />
                 </div>
+                {session.is_special === 1 && <span className="attendance-special-tag">One-time</span>}
                 <Status value={session.status} />
               </div>
               <h3>{session.class_name}</h3>
-              <p>{session.subject || "Class session"}</p>
+              <p>{session.is_special ? "One-time special session" : session.subject || "Class session"}</p>
               <div className="attendance-meta">
                 <span>
                   <Clock3 size={14} />
@@ -1834,6 +1840,7 @@ function AttendancePage({ version, refresh, setModal, notify }) {
                   <Users size={14} />
                   {session.present_count} / {session.roster_count} present
                 </span>
+                {session.hall_name && <span><DoorOpen size={14} />{session.hall_name}</span>}
               </div>
               <div className="attendance-card-footer">
                 <span>
@@ -2224,11 +2231,14 @@ function PaymentsPage({ version, setModal, notify }) {
 }
 
 function TeacherPaymentsPanel({ version, setModal, notify }) {
+  const [section, setSection] = useState("balances");
   const [teacherId, setTeacherId] = useState("");
   const [period, setPeriod] = useState("3");
   const [month, setMonth] = useState(thisMonth());
   const [from, setFrom] = useState(shiftMonth(thisMonth(), -2));
   const [to, setTo] = useState(thisMonth());
+  const [historyPage, setHistoryPage] = useState(1);
+  const [balancePage, setBalancePage] = useState(1);
   const range = period === "3"
     ? [shiftMonth(thisMonth(), -2), thisMonth()]
     : period === "month"
@@ -2252,75 +2262,114 @@ function TeacherPaymentsPanel({ version, setModal, notify }) {
       notify(err.message, "error");
     }
   };
+  const filteredBalances = (balances.data || [])
+    .filter((row) => !teacherId || row.tid === Number(teacherId))
+    .sort((a, b) => Number(b.outstanding) - Number(a.outstanding));
   return (
     <section className="panel data-panel teacher-payment-panel">
       <div className="report-heading">
-        <div><h2>Teacher payments &amp; payout records</h2><p>Review teacher balances and payouts within a selected month period.</p></div>
+        <div><h2>Teacher payments</h2><p>Review teacher balances and payout history.</p></div>
         <div className="heading-actions">
-          <Button kind="secondary" icon={Download} onClick={exportHistory} disabled={!payouts.data || Boolean(payouts.error)}>Export filtered PDF</Button>
           <Button icon={Plus} onClick={() => setModal({ type: "payout-form" })}>Record teacher payout</Button>
+          {section === "history" && (
+            <Button kind="secondary" icon={Download} onClick={exportHistory} disabled={!payouts.data || Boolean(payouts.error)}>Export filtered PDF</Button>
+          )}
         </div>
       </div>
-      <div className="history-filter-row">
-        <label>Teacher
-          <SearchableSelect
-            value={teacherId}
-            ariaLabel="Filter payouts by teacher"
-            placeholder="Search a teacher…"
-            options={[
-              { value: "", label: "All teachers" },
-              ...(teachers || []).map((teacher) => ({ value: String(teacher.tid), label: teacher.name })),
-            ]}
-            onValueChange={setTeacherId}
-          />
-        </label>
-        <label>Period
-          <select className="month-input" value={period} onChange={(event) => setPeriod(event.target.value)}>
-            <option value="3">Last 3 months</option>
-            <option value="month">Selected month</option>
-            <option value="custom">Month range</option>
-          </select>
-        </label>
-        {period === "month" && (
-          <label>Month
-            <input type="month" className="month-input" max={thisMonth()} value={month} onChange={(event) => setMonth(event.target.value)} />
-          </label>
-        )}
-        {period === "custom" && (
-          <>
-            <label>From
-              <input type="month" className="month-input" max={to} value={from} onChange={(event) => setFrom(event.target.value)} />
-            </label>
-            <label>To
-              <input type="month" className="month-input" min={from} max={thisMonth()} value={to} onChange={(event) => setTo(event.target.value)} />
-            </label>
-          </>
-        )}
+      <div className="report-tabs teacher-payment-tabs" role="tablist" aria-label="Teacher payment sections">
+        <button type="button" role="tab" aria-selected={section === "balances"} className={section === "balances" ? "active" : ""} onClick={() => setSection("balances")}>Balances</button>
+        <button type="button" role="tab" aria-selected={section === "history"} className={section === "history" ? "active" : ""} onClick={() => setSection("history")}>Payout history</button>
       </div>
-      {payouts.error && <div className="error-inline">{payouts.error}</div>}
-      <div className="report-heading compact-report-heading"><div><h2>Payout history</h2><p>{range[0]} through {range[1]}</p></div></div>
-      {payouts.data?.length ? (
-        <div className="table-wrap"><table>
-          <thead><tr><th>TEACHER</th><th>DATE</th><th>CLASSES / MONTHS</th><th>NOTES</th><th>AMOUNT PAID</th></tr></thead>
-          <tbody>{payouts.data.map((row) => <tr key={row.payout_id}><td><b>{row.teacher_name}</b></td><td>{prettyDate(row.payout_date)}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td><b>{money(row.amount)}</b></td></tr>)}</tbody>
-        </table></div>
-      ) : !payouts.error && <div className="payout-empty">No payouts for this teacher and period.</div>}
-      <div className="report-heading compact-report-heading"><div><h2>Teacher balances</h2><p>Total commission earned minus payouts made to date.</p></div></div>
-      {balances.error && <div className="error-inline">{balances.error}</div>}
-      {balances.data?.filter((row) => !teacherId || row.tid === Number(teacherId)).length ? (
-        <div className="table-wrap"><table>
-          <thead><tr><th>TEACHER</th><th>EARNED TO DATE</th><th>PAID OUT</th><th>REMAINING BALANCE</th></tr></thead>
-          <tbody>{balances.data.filter((row) => !teacherId || row.tid === Number(teacherId)).map((row) => (
-            <tr key={row.tid}><td><b>{row.name}</b></td><td>{money(row.earned)}</td><td>{money(row.paid_out)}</td><td><b className={Number(row.outstanding) > 0 ? "pending-amount" : ""}>{money(row.outstanding)}</b></td></tr>
-          ))}</tbody>
-        </table></div>
-      ) : !balances.error && <div className="payout-empty">No teacher balance records found.</div>}
-      <div className="print-report">
-        <header><h1>Teacher payout report</h1><p>{teacherId ? teachers?.find((teacher) => String(teacher.tid) === teacherId)?.name : "All teachers"}</p><span>{range[0]} to {range[1]}</span></header>
-        <table><thead><tr><th>Teacher</th><th>Date</th><th>Classes / months</th><th>Notes</th><th>Amount</th></tr></thead>
-          <tbody>{(payouts.data || []).map((row) => <tr key={row.payout_id}><td>{row.teacher_name}</td><td>{row.payout_date}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td>{money(row.amount)}</td></tr>)}</tbody>
-        </table>
-      </div>
+      {section === "history" ? (
+        <>
+          <div className="history-filter-row">
+            <label>Teacher
+              <SearchableSelect
+                value={teacherId}
+                ariaLabel="Filter payout history by teacher"
+                placeholder="Search a teacher…"
+                options={[
+                  { value: "", label: "All teachers" },
+                  ...(teachers || []).map((teacher) => ({ value: String(teacher.tid), label: teacher.name })),
+                ]}
+                onValueChange={(value) => { setTeacherId(value); setHistoryPage(1); }}
+              />
+            </label>
+            <label>Period
+              <select className="month-input" value={period} onChange={(event) => { setPeriod(event.target.value); setHistoryPage(1); }}>
+                <option value="3">Last 3 months</option>
+                <option value="month">Selected month</option>
+                <option value="custom">Month range</option>
+              </select>
+            </label>
+            {period === "month" && (
+              <label>Month
+                <input type="month" className="month-input" max={thisMonth()} value={month} onChange={(event) => { setMonth(event.target.value); setHistoryPage(1); }} />
+              </label>
+            )}
+            {period === "custom" && (
+              <>
+                <label>From
+                  <input type="month" className="month-input" max={to} value={from} onChange={(event) => { setFrom(event.target.value); setHistoryPage(1); }} />
+                </label>
+                <label>To
+                  <input type="month" className="month-input" min={from} max={thisMonth()} value={to} onChange={(event) => { setTo(event.target.value); setHistoryPage(1); }} />
+                </label>
+              </>
+            )}
+          </div>
+          {payouts.error && <div className="error-inline">{payouts.error}</div>}
+          <div className="report-heading compact-report-heading"><div><h2>Payout history</h2><p>{range[0]} through {range[1]}</p></div></div>
+          {payouts.data?.length ? (
+            <>
+              <div className="table-wrap"><table>
+                <thead><tr><th>TEACHER</th><th>DATE</th><th>CLASSES / MONTHS</th><th>NOTES</th><th>AMOUNT PAID</th></tr></thead>
+                <tbody>{pageSlice(payouts.data, historyPage).map((row) => <tr key={row.payout_id}><td><b>{row.teacher_name}</b></td><td>{prettyDate(row.payout_date)}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td><b>{money(row.amount)}</b></td></tr>)}</tbody>
+              </table></div>
+              <Pagination count={payouts.data.length} page={historyPage} setPage={setHistoryPage} />
+            </>
+          ) : !payouts.error && <div className="payout-empty">No payouts for this teacher and period.</div>}
+          <div className="print-report">
+            <header><h1>Teacher payout report</h1><p>{teacherId ? teachers?.find((teacher) => String(teacher.tid) === teacherId)?.name : "All teachers"}</p><span>{range[0]} to {range[1]}</span></header>
+            <table><thead><tr><th>Teacher</th><th>Date</th><th>Classes / months</th><th>Notes</th><th>Amount</th></tr></thead>
+              <tbody>{(payouts.data || []).map((row) => <tr key={row.payout_id}><td>{row.teacher_name}</td><td>{row.payout_date}</td><td>{row.details || "—"}</td><td>{row.notes || "—"}</td><td>{money(row.amount)}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="history-filter-row">
+            <label>Teacher
+              <SearchableSelect
+                value={teacherId}
+                ariaLabel="Filter teacher balances by teacher"
+                placeholder="Search a teacher…"
+                options={[
+                  { value: "", label: "All teachers" },
+                  ...(teachers || []).map((teacher) => ({ value: String(teacher.tid), label: teacher.name })),
+                ]}
+                onValueChange={(value) => { setTeacherId(value); setBalancePage(1); }}
+              />
+            </label>
+          </div>
+          <div className="report-heading compact-report-heading"><div><h2>Teacher balances</h2><p>Pending amounts are ordered highest to lowest. Total commission earned minus payouts made to date.</p></div></div>
+          {balances.error && <div className="error-inline">{balances.error}</div>}
+          {filteredBalances.length ? (
+            <>
+              <div className="table-wrap"><table>
+                <thead><tr><th>TEACHER</th><th>EARNED TO DATE</th><th>PAID OUT</th><th>PENDING BALANCE</th></tr></thead>
+                <tbody>{pageSlice(filteredBalances, balancePage).map((row) => {
+                  const outstanding = Number(row.outstanding);
+                  return (
+                    <tr key={row.tid}><td><b>{row.name}</b></td><td>{money(row.earned)}</td><td>{money(row.paid_out)}</td><td><b className={`teacher-balance-badge ${outstanding > 0 ? "teacher-balance-pending" : "teacher-balance-settled"}`}>{money(outstanding)}</b></td></tr>
+                  );
+                })}</tbody>
+              </table></div>
+              <Pagination count={filteredBalances.length} page={balancePage} setPage={setBalancePage} />
+            </>
+          ) : !balances.error && <div className="payout-empty">No teacher balance records found.</div>}
+        </>
+      )}
     </section>
   );
 }
@@ -2342,7 +2391,12 @@ function ReportsPage({ version, setModal, notify, user }) {
   const [historyPage, setHistoryPage] = useState(1);
   const [payoutPage, setPayoutPage] = useState(1);
   const [pendingPage, setPendingPage] = useState(1);
+  const currentReportMonth = thisMonth();
   const earnings = useLoad(() => api.reports.classEarnings(month), [month, version]);
+  const todayEarnings = useLoad(
+    () => api.reports.classEarnings(currentReportMonth),
+    [currentReportMonth, version],
+  );
   const balances = useLoad(() => api.reports.teacherBalances(), [version]);
   const history = useLoad(() => api.reports.paymentRecords(), [version]);
   const payouts = useLoad(() => api.payouts.list(), [version]);
@@ -2390,6 +2444,14 @@ function ReportsPage({ version, setModal, notify, user }) {
   const orgTotal = data.reduce((sum, row) => sum + Number(row.org_earnings), 0);
   const pendingTeacher = data.reduce((sum, row) => sum + Number(row.pending_teacher), 0);
   const pendingOrg = data.reduce((sum, row) => sum + Number(row.pending_org), 0);
+  const paidToTeachers = (payouts.data || []).reduce(
+    (sum, row) => sum + (row.payout_date.slice(0, 7) === month ? Number(row.amount) : 0),
+    0,
+  );
+  const todayPendingOrg = (todayEarnings.data || []).reduce(
+    (sum, row) => sum + Number(row.pending_org),
+    0,
+  );
   const exportPdf = async () => {
     try {
       const result = await api.reports.exportPDF();
@@ -2424,6 +2486,35 @@ function ReportsPage({ version, setModal, notify, user }) {
           </div>
         }
       />
+      <div className="stats-grid report-overview-stats">
+        <div className="stat-card">
+          <div className="stat-icon"><Activity size={18} /></div>
+          <div className="stat-label">Institute earnings</div>
+          <div className="stat-value">{earnings.data ? money(orgTotal) : "—"}</div>
+          <div className="stat-foot">Institute share collected for {month}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><Wallet size={18} /></div>
+          <div className="stat-label">Pending amount</div>
+          <div className="stat-value">{earnings.data ? money(pendingOrg) : "—"}</div>
+          <div className="stat-foot">Institute share from unpaid {month} fees</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><CreditCard size={18} /></div>
+          <div className="stat-label">Paid to teachers</div>
+          <div className="stat-value">{payouts.data ? money(paidToTeachers) : "—"}</div>
+          <div className="stat-foot">Payouts recorded during {month}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><CalendarDays size={18} /></div>
+          <div className="stat-label">Pending payments today</div>
+          <div className="stat-value">{todayEarnings.data ? money(todayPendingOrg) : "—"}</div>
+          <div className="stat-foot">Institute share outstanding as of {prettyDate(today())}</div>
+        </div>
+      </div>
+      {earnings.error && <div className="error-inline">{earnings.error}</div>}
+      {todayEarnings.error && <div className="error-inline">{todayEarnings.error}</div>}
+      {payouts.error && <div className="error-inline">{payouts.error}</div>}
       <div className="report-tabs" role="tablist" aria-label="Report sections">
         <button className={reportSection === "students" ? "active" : ""} onClick={() => setReportSection("students")}>Student reports</button>
         <button className={reportSection === "teachers" ? "active" : ""} onClick={() => setReportSection("teachers")}>Teacher reports</button>
@@ -2439,7 +2530,6 @@ function ReportsPage({ version, setModal, notify, user }) {
       </div>
       <div className="panel data-panel report-table">
         <div className="report-heading"><div><h2>Class earnings</h2><p>Per-class breakdown for {month}</p></div></div>
-        {earnings.error && <div className="error-inline">{earnings.error}</div>}
         <TableToolbar count={filteredClasses.length} placeholder="Search class or teacher…" query={classQuery} setQuery={(value) => { setClassQuery(value); setClassPage(1); }} />
         {filteredClasses.length ? (
           <>
@@ -2486,7 +2576,6 @@ function ReportsPage({ version, setModal, notify, user }) {
       </section>
       <section className="panel data-panel payout-panel">
         <div className="report-heading"><div><h2>Teacher payout records</h2><p>Recorded payouts and the classes/months they cover.</p></div></div>
-        {payouts.error && <div className="error-inline">{payouts.error}</div>}
         <TableToolbar count={filteredPayouts.length} placeholder="Search teacher payouts…" query={payoutQuery} setQuery={(value) => { setPayoutQuery(value); setPayoutPage(1); }} />
         {filteredPayouts.length ? (
           <>
@@ -2594,7 +2683,7 @@ function SettingsPage({ user, setUser, notify, refresh }) {
     try {
       await api.settings.saveOrganization(form);
       setUser({ ...user, organization: form.name });
-      notify("Organization details saved.");
+      notify("Organization and payment due day saved.");
       refresh();
     } catch (err) {
       notify(err.message, "error");
@@ -2659,6 +2748,25 @@ function SettingsPage({ user, setUser, notify, refresh }) {
                 }
                 placeholder="Optional"
               />
+              <div className="due-date-settings">
+                <div>
+                  <b>Student payment due day</b>
+                  <span>Set one day from 1 to 31. Unpaid students receive a yellow attendance warning on or after that day each month; attendance is never blocked.</span>
+                </div>
+                <Field label="Due day of each month">
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    step="1"
+                    inputMode="numeric"
+                    placeholder="For example, 10"
+                    value={form.payment_due_day ?? ""}
+                    onChange={(event) => setForm({ ...form, payment_due_day: event.target.value })}
+                  />
+                </Field>
+                <small>For months shorter than the selected day, the due date is the last day of that month. Leave blank to turn off overdue warnings.</small>
+              </div>
               <div className="settings-actions">
                 <Button type="submit" disabled={busy}>
                   {busy ? "Saving…" : "Save changes"}
@@ -2808,6 +2916,13 @@ function ModalHost({
         refresh={refresh}
         notify={notify}
         setModal={setModal}
+      />
+    ) : modal.type === "special-session-form" ? (
+      <SpecialSessionForm
+        date={modal.date}
+        close={close}
+        finish={finish}
+        notify={notify}
       />
     ) : modal.type === "payment-review" ? (
       <PaymentReview
@@ -4304,6 +4419,111 @@ function StudentDetail({
   );
 }
 
+function SpecialSessionForm({ date, close, finish, notify }) {
+  const { data: classes, error: classesError } = useLoad(() => api.classes.list(), []);
+  const { data: halls, error: hallsError } = useLoad(() => api.halls.list(), []);
+  const [form, setForm] = useState({
+    class_id: "",
+    session_date: date || today(),
+    start_time: "09:00",
+    end_time: "10:00",
+    hall_id: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const save = async (event) => {
+    event.preventDefault();
+    setError("");
+    if (typeof api.sessions.scheduleSpecial !== "function") {
+      setError("This app build does not include special-session support. Close and restart the desktop app, or install the latest version.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.sessions.scheduleSpecial(form);
+      notify("One-time special session scheduled.");
+      finish();
+    } catch (err) {
+      const message = String(err?.message || "Could not schedule the special session.");
+      setError(
+        message.replace(
+          /^(?:Error invoking remote method '[^']+':\s*)?(?:Error:\s*)+/,
+          "",
+        ).trim(),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const activeClasses = (classes || []).filter((item) => item.status === "active");
+  return (
+    <>
+      <ModalTitle
+        eyebrow="ONE-TIME CLASS"
+        title="Schedule a special session"
+        description="Add an extra session on a specific date without changing the weekly timetable."
+        close={close}
+      />
+      <form className="modal-form" onSubmit={save}>
+        {error && <div className="form-error special-session-error">{error}</div>}
+        {classesError && <div className="form-error">{classesError}</div>}
+        {hallsError && <div className="form-error">{hallsError}</div>}
+        <SelectField
+          label="Class"
+          required
+          value={form.class_id}
+          onChange={(event) => setForm({ ...form, class_id: event.target.value })}
+          options={[
+            { value: "", label: "Choose a class" },
+            ...activeClasses.map((item) => ({ value: String(item.class_id), label: item.class_name })),
+          ]}
+        />
+        <Field
+          label="Session date"
+          required
+          type="date"
+          value={form.session_date}
+          onChange={(event) => setForm({ ...form, session_date: event.target.value })}
+        />
+        <div className="form-two">
+          <Field
+            label="Start time"
+            required
+            type="time"
+            value={form.start_time}
+            onChange={(event) => setForm({ ...form, start_time: event.target.value })}
+          />
+          <Field
+            label="End time"
+            required
+            type="time"
+            value={form.end_time}
+            onChange={(event) => setForm({ ...form, end_time: event.target.value })}
+          />
+        </div>
+        <SelectField
+          label="Hall (optional)"
+          value={form.hall_id}
+          onChange={(event) => setForm({ ...form, hall_id: event.target.value })}
+          options={[
+            { value: "", label: "No hall selected" },
+            ...(halls || []).map((hall) => ({ value: String(hall.hall_id), label: hall.name })),
+          ]}
+        />
+        {!activeClasses.length && !classesError && (
+          <div className="form-error">Create an active class before scheduling a special session.</div>
+        )}
+        <div className="modal-actions">
+          <Button kind="secondary" type="button" onClick={close}>Cancel</Button>
+          <Button type="submit" disabled={busy || !activeClasses.length || Boolean(classesError) || Boolean(hallsError)}>
+            {busy ? "Scheduling…" : "Schedule session"}
+          </Button>
+        </div>
+      </form>
+    </>
+  );
+}
+
 function SessionModal({ session, close, refresh, notify, setModal }) {
   const [rows, setRows] = useState(null);
   const [status, setStatus] = useState(session.status);
@@ -4554,6 +4774,43 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
                     <Status value={selectedStudent.status} />
                   </div>
                 </div>
+                {Number(selectedStudent.overdue_month_count) > 0 && (
+                  <div className="payment-overdue-notice" role="status">
+                    <b>Not paid yet</b>
+                    <span>
+                      {selectedStudent.overdue_month_count} month{Number(selectedStudent.overdue_month_count) === 1 ? "" : "s"} need{Number(selectedStudent.overdue_month_count) === 1 ? "s" : ""} to be paid. Attendance can still be marked.
+                    </span>
+                    {status === "ongoing" && selectedStudent.status === "present" && (
+                      <div className="payment-overdue-actions">
+                        {selectedStudent.overdue_months.map(({ month }) => {
+                          const monthName = new Date(`${month}-02T00:00:00`).toLocaleDateString(undefined, {
+                            month: "long",
+                            year: "numeric",
+                          });
+                          return (
+                            <Button
+                              key={month}
+                              kind="secondary"
+                              onClick={() => setModal({
+                                type: "payment-review",
+                                rows: [{
+                                  ...selectedStudent,
+                                  class_name: session.class_name,
+                                  due_amount: Number(selectedStudent.fee) * (1 - Number(selectedStudent.discount_percentage || 0) / 100),
+                                }],
+                                month,
+                                session_id: session.session_id,
+                                session,
+                              })}
+                            >
+                              Paid for {monthName}
+                            </Button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="session-detail-fields">
                   <div>
                   <span>School</span>
@@ -4600,6 +4857,7 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
                     </Button>
                   )}
                   {status === "ongoing" && selectedStudent.status === "present" && (
+                    (selectedStudent.payment_id || !selectedStudent.overdue_months?.some(({ month }) => month === thisMonth())) && (
                     <Button
                       kind={selectedStudent.payment_id ? "secondary" : "alert"}
                       onClick={() => !selectedStudent.payment_id && pay(selectedStudent)}
@@ -4616,6 +4874,7 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
                           ? "Paid this month"
                           : `Mark as Paid ${money(selectedStudent.fee * (1 - (selectedStudent.discount_percentage || 0) / 100))}`}
                     </Button>
+                    )
                   )}
                 </div>
               </>

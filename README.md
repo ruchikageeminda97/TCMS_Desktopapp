@@ -24,10 +24,11 @@ Student and teacher pages include downloadable Excel templates and `.xlsx` impor
 
 - Student and teacher records with Excel (`.xlsx`) import and downloadable templates; student birth dates, contacts and RFID-card assignment/search.
 - Class setup, weekly schedules, optional halls with editable weekly availability, student enrolments and individual fee discounts.
-- Session generation from the weekly timetable, attendance registers with automatic RFID scanning and student details, and automatic absent marking when a session ends.
+- Session generation from the weekly timetable plus one-time special sessions with a chosen class, date, time and optional hall; selected halls are checked against weekly availability and overlapping bookings.
+- Attendance registers with automatic RFID scanning and student details, automatic absent marking when a session ends, and a non-blocking yellow warning for unpaid monthly fees after the organization's recurring payment due day.
 - Monthly tuition collection from the payments screen or attendance register, with duplicate-payment protection.
 - Class earnings, outstanding fees, teacher commissions, organization shares and teacher-payout records.
-- Editable organization details and local SQLite backup/validated restore. Restore first makes a safety copy of the active database.
+- Editable organization details, a recurring student payment due day (1–31), and local SQLite backup/validated restore. Restore first makes a safety copy of the active database.
 
 ## Data and backup notes
 

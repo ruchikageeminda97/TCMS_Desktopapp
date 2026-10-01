@@ -3,7 +3,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { openDatabase, getDatabase } = require('./database');
-const { slotIsAvailable, validateSlots } = require('./scheduling');
+const { overlaps, slotIsAvailable, validateSlots, validTime } = require('./scheduling');
+const { overduePaymentMonths } = require('./payment-due');
 const { createTemplateBuffer, parseExcelRecords } = require('./record-import');
 
 let window;
@@ -22,6 +23,11 @@ const verifyPassword = (password, stored) => {
 const today = () => new Date().toISOString().slice(0, 10);
 const currentMonth = () => today().slice(0, 7);
 const validMonth = (month) => /^\d{4}-(0[1-9]|1[0-2])$/.test(month);
+const validDate = (date) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+};
 const money = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const requireUser = () => {
   if (!activeUser) throw new Error('Please sign in to continue.');
@@ -349,30 +355,106 @@ function registerIpc() {
   });
   ipcMain.handle('sessions:list', (_event, date = today()) => getDatabase().prepare(`
     SELECT s.session_id,s.class_id,s.session_date,s.start_time,s.end_time,s.status,c.class_name,c.subject,
+      s.is_special,CASE WHEN s.is_special=1 THEN s.hall_id ELSE COALESCE(s.hall_id,c.hall_id) END AS hall_id,
+      h.name AS hall_name,
       (SELECT COUNT(*) FROM attendance a WHERE a.session_id=s.session_id AND a.status='present') AS present_count,
       (SELECT COUNT(*) FROM attendance a WHERE a.session_id=s.session_id) AS roster_count
-    FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE c.oid=? AND s.session_date=? ORDER BY s.start_time,c.class_name`).all(org(), date));
+    FROM sessions s JOIN classes c ON c.class_id=s.class_id
+    LEFT JOIN halls h ON h.hall_id=CASE WHEN s.is_special=1 THEN s.hall_id ELSE COALESCE(s.hall_id,c.hall_id) END
+    WHERE c.oid=? AND s.session_date=? ORDER BY s.start_time,c.class_name`).all(org(), date));
   ipcMain.handle('sessions:generate', (_event, date = today()) => {
-    const parsedDate = new Date(`${date}T00:00:00Z`);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) throw new Error('Enter a valid session date.');
+    if (!validDate(date)) throw new Error('Enter a valid session date.');
     const db = getDatabase();
     const day = new Date(`${date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
-    const schedules = db.prepare(`SELECT s.class_id,s.start_time,s.end_time FROM class_schedules s JOIN classes c ON c.class_id=s.class_id WHERE c.oid=? AND c.status='active' AND s.day_of_week=?`).all(org(), day);
-    const insert = db.prepare('INSERT OR IGNORE INTO sessions (class_id,session_date,start_time,end_time) VALUES (?,?,?,?)');
+    const schedules = db.prepare(`SELECT s.class_id,s.start_time,s.end_time,c.hall_id
+      FROM class_schedules s JOIN classes c ON c.class_id=s.class_id
+      WHERE c.oid=? AND c.status='active' AND s.day_of_week=?`).all(org(), day);
+    const insert = db.prepare('INSERT OR IGNORE INTO sessions (class_id,session_date,start_time,end_time,hall_id) VALUES (?,?,?,?,?)');
     let created = 0;
-    db.transaction(() => schedules.forEach(s => { created += insert.run(s.class_id, date, s.start_time, s.end_time).changes; }))();
+    db.transaction(() => schedules.forEach(s => { created += insert.run(s.class_id, date, s.start_time, s.end_time, s.hall_id).changes; }))();
     return { created };
+  });
+  ipcMain.handle('sessions:scheduleSpecial', (_event, input) => {
+    const db = getDatabase();
+    const classId = Number(input.class_id);
+    if (!Number.isInteger(classId)) throw new Error('Choose an active class in this organization.');
+    const classRow = db.prepare("SELECT class_id,hall_id FROM classes WHERE class_id=? AND oid=? AND status='active'").get(classId, org());
+    if (!classRow) throw new Error('Choose an active class in this organization.');
+    const date = String(input.session_date || '');
+    const startTime = String(input.start_time || '');
+    const endTime = String(input.end_time || '');
+    if (!validDate(date) || !validTime(startTime) || !validTime(endTime) || startTime >= endTime) {
+      throw new Error('Enter a valid session date and time range.');
+    }
+    const hallId = input.hall_id ? Number(input.hall_id) : null;
+    const day = new Date(`${date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    const timeSlot = { day_of_week: day, start_time: startTime, end_time: endTime };
+    const classScheduleConflict = db.prepare(`SELECT start_time,end_time FROM class_schedules
+      WHERE class_id=? AND day_of_week=? AND start_time<? AND end_time>? LIMIT 1`)
+      .get(classId, day, endTime, startTime);
+    if (classScheduleConflict) {
+      throw new Error(`This class already has a weekly session at ${classScheduleConflict.start_time}–${classScheduleConflict.end_time} on ${day}.`);
+    }
+    if (hallId !== null) {
+      if (!Number.isInteger(hallId) || !db.prepare('SELECT 1 FROM halls WHERE hall_id=? AND oid=?').get(hallId, org())) {
+        throw new Error('Choose a hall in this organization.');
+      }
+      const availability = db.prepare('SELECT day_of_week,start_time,end_time FROM hall_availability WHERE hall_id=?').all(hallId);
+      if (!slotIsAvailable(timeSlot, availability)) {
+        throw new Error(`The hall is not available ${day} ${startTime}–${endTime}.`);
+      }
+      const recurringConflict = db.prepare(`SELECT c.class_name,s.start_time,s.end_time
+        FROM classes c JOIN class_schedules s ON s.class_id=c.class_id
+        WHERE c.hall_id=? AND c.oid=? AND c.status='active' AND s.day_of_week=?
+          AND s.start_time<? AND s.end_time>? LIMIT 1`).get(hallId, org(), day, endTime, startTime);
+      if (recurringConflict) {
+        throw new Error(`${recurringConflict.class_name} already uses this hall at ${recurringConflict.start_time}–${recurringConflict.end_time} on ${day}.`);
+      }
+      const sessionConflict = db.prepare(`SELECT c.class_name,s.start_time,s.end_time
+        FROM sessions s JOIN classes c ON c.class_id=s.class_id
+        WHERE c.oid=? AND s.session_date=? AND s.status!='cancelled'
+          AND (CASE WHEN s.is_special=1 THEN s.hall_id ELSE COALESCE(s.hall_id,c.hall_id) END)=?
+          AND s.start_time<? AND s.end_time>? LIMIT 1`).get(org(), date, hallId, endTime, startTime);
+      if (sessionConflict) {
+        throw new Error(`${sessionConflict.class_name} already has this hall booked at ${sessionConflict.start_time}–${sessionConflict.end_time} on ${date}.`);
+      }
+    }
+    const classConflict = db.prepare(`SELECT start_time,end_time FROM sessions
+      WHERE class_id=? AND session_date=? AND status!='cancelled' AND start_time<? AND end_time>? LIMIT 1`)
+      .get(classId, date, endTime, startTime);
+    if (classConflict && overlaps(classConflict.start_time, classConflict.end_time, startTime, endTime)) {
+      throw new Error(`This class already has a session at ${classConflict.start_time}–${classConflict.end_time} on ${date}.`);
+    }
+    return db.prepare(`INSERT INTO sessions (class_id,session_date,start_time,end_time,hall_id,is_special)
+      VALUES (?,?,?,?,?,1)`).run(classId, date, startTime, endTime, hallId).lastInsertRowid;
   });
   ipcMain.handle('sessions:attendance', (_event, sessionId) => {
     const db = getDatabase();
     const session = db.prepare('SELECT s.session_id,s.status,s.class_id,c.oid FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE s.session_id=? AND c.oid=?').get(sessionId, org());
     if (!session) throw new Error('Session not found.');
-    return db.prepare(`SELECT a.attendance_id,a.stid,a.status,a.marked_at,s.name,s.rfid,s.school,s.contact1,s.contact2,s.birthday,s.address,s.status AS student_status,e.enrollment_id,e.discount_percentage,c.fee,
-      p.payment_id,p.amount_paid FROM attendance a JOIN students s ON s.stid=a.stid
-      LEFT JOIN class_enrollments e ON e.class_id=? AND e.stid=a.stid
-      LEFT JOIN classes c ON c.class_id=?
+    const dueDay = db.prepare('SELECT payment_due_day FROM organizations WHERE oid=?').get(session.oid).payment_due_day;
+    const attendees = db.prepare(`SELECT a.attendance_id,a.stid,a.status,a.marked_at,s.name,s.rfid,s.school,s.contact1,s.contact2,s.birthday,s.address,s.status AS student_status,e.enrollment_id,e.discount_percentage,e.enrolled_date,c.fee,
+      p.payment_id,p.amount_paid,
+      (SELECT GROUP_CONCAT(for_month) FROM payments WHERE enrollment_id=e.enrollment_id) AS paid_months
+      FROM attendance a JOIN students s ON s.stid=a.stid
+      JOIN classes c ON c.class_id=?
+      LEFT JOIN class_enrollments e ON e.class_id=? AND e.stid=a.stid AND e.status='active'
       LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
       WHERE a.session_id=? ORDER BY s.name COLLATE NOCASE`).all(session.class_id, session.class_id, currentMonth(), sessionId);
+    return attendees.map(attendee => {
+      const overdueDates = overduePaymentMonths(
+        attendee.enrolled_date,
+        attendee.paid_months ? attendee.paid_months.split(',') : [],
+        dueDay,
+        today()
+      );
+      return {
+        ...attendee,
+        overdue_month_count: overdueDates.length,
+        overdue_since: overdueDates[0]?.due_date || null,
+        overdue_months: overdueDates
+      };
+    });
   });
   ipcMain.handle('sessions:start', (_event, sessionId) => {
     const db = getDatabase();
@@ -606,11 +688,25 @@ function registerIpc() {
     });
     return save();
   });
-  ipcMain.handle('settings:organization', () => getDatabase().prepare('SELECT name,contact FROM organizations WHERE oid=?').get(org()));
+  ipcMain.handle('settings:organization', () => {
+    const oid = org();
+    const db = getDatabase();
+    return db.prepare('SELECT name,contact,payment_due_day FROM organizations WHERE oid=?').get(oid);
+  });
   ipcMain.handle('settings:saveOrganization', (_event, input) => {
     const name = String(input.name || '').trim();
     if (!name) throw new Error('Organization name is required.');
-    const updated = getDatabase().prepare('UPDATE organizations SET name=?,contact=? WHERE oid=?').run(name, String(input.contact || ''), org()).changes > 0;
+    const inputDueDay = input.payment_due_day;
+    const dueDay = inputDueDay === '' || inputDueDay === null || inputDueDay === undefined
+      ? null
+      : Number(inputDueDay);
+    if (dueDay !== null && (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31)) {
+      throw new Error('Payment due day must be between 1 and 31.');
+    }
+    const oid = org();
+    const db = getDatabase();
+    const updated = db.prepare('UPDATE organizations SET name=?,contact=?,payment_due_day=? WHERE oid=?')
+      .run(name, String(input.contact || ''), dueDay, oid).changes > 0;
     if (updated) activeUser.organization = name;
     return updated;
   });
