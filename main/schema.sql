@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS students (
   contact2 TEXT,
   birthday TEXT,
   address TEXT,
+  photo_data TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -88,6 +89,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   hall_id INTEGER REFERENCES halls(hall_id),
   is_special INTEGER NOT NULL DEFAULT 0 CHECK (is_special IN (0,1)),
   status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','ongoing','completed','cancelled')),
+  register_opened_at TEXT,
+  class_started_at TEXT,
+  ended_at TEXT,
+  ended_automatically INTEGER NOT NULL DEFAULT 0 CHECK (ended_automatically IN (0,1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (class_id, session_date, start_time)
 );
@@ -97,6 +102,7 @@ CREATE TABLE IF NOT EXISTS attendance (
   stid INTEGER NOT NULL REFERENCES students(stid) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'not_marked' CHECK (status IN ('present','absent','not_marked')),
   marked_at TEXT,
+  present_at TEXT,
   UNIQUE (session_id, stid)
 );
 CREATE TABLE IF NOT EXISTS payments (

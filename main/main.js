@@ -5,7 +5,11 @@ const crypto = require('node:crypto');
 const { openDatabase, getDatabase } = require('./database');
 const { overlaps, slotIsAvailable, validateSlots, validTime } = require('./scheduling');
 const { overduePaymentMonths } = require('./payment-due');
+const { buildAttendanceReportHtml } = require('./attendance-report');
+const { buildDailySummaryReportHtml } = require('./daily-summary-report');
+const { buildClassPaymentReportHtml } = require('./class-payment-report');
 const { createTemplateBuffer, parseExcelRecords } = require('./record-import');
+const { completeOngoingSession, endExpiredSessions } = require('./session-lifecycle');
 
 let window;
 let activeUser = null;
@@ -21,6 +25,11 @@ const verifyPassword = (password, stored) => {
   return actual.length === expectedBuffer.length && crypto.timingSafeEqual(actual, expectedBuffer);
 };
 const today = () => new Date().toISOString().slice(0, 10);
+const localDate = (date = new Date()) => [
+  date.getFullYear(),
+  String(date.getMonth() + 1).padStart(2, '0'),
+  String(date.getDate()).padStart(2, '0')
+].join('-');
 const currentMonth = () => today().slice(0, 7);
 const validMonth = (month) => /^\d{4}-(0[1-9]|1[0-2])$/.test(month);
 const validDate = (date) => {
@@ -104,11 +113,39 @@ function registerIpc() {
       classes: db.prepare("SELECT COUNT(*) AS count FROM classes WHERE oid=? AND status='active'").get(oid).count,
       collected: db.prepare('SELECT COALESCE(SUM(p.amount_paid),0) AS amount FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id JOIN classes c ON c.class_id=e.class_id WHERE c.oid=? AND p.for_month=?').get(oid, currentMonth()).amount,
       pending: getPendingTotal(oid, currentMonth()),
-      sessions: db.prepare("SELECT s.session_id,s.session_date,s.start_time,s.end_time,s.status,c.class_name,c.subject FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE c.oid=? AND s.session_date=? AND s.status!='cancelled' ORDER BY s.start_time").all(oid, today()),
+      sessions: db.prepare("SELECT s.session_id,s.session_date,s.start_time,s.end_time,s.status,s.ended_automatically,c.class_name,c.subject FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE c.oid=? AND s.session_date=? AND s.status!='cancelled' ORDER BY s.start_time").all(oid, today()),
       lastBackup: db.prepare("SELECT created_at,file_path FROM backup_logs WHERE oid=? AND status='success' ORDER BY backup_id DESC LIMIT 1").get(oid) || null
     };
   });
   ipcMain.handle('students:list', scopedList('students', 'stid,rfid,name,school,contact1,contact2,birthday,address,status', 'name COLLATE NOCASE'));
+  ipcMain.handle('students:photo', (_event, stid) => {
+    const studentId = Number(stid);
+    if (!Number.isInteger(studentId) || studentId < 1) throw new Error('Choose a valid student.');
+    const student = getDatabase().prepare('SELECT photo_data FROM students WHERE stid=? AND oid=?').get(studentId, org());
+    if (!student) throw new Error('Student not found.');
+    return student.photo_data || null;
+  });
+  ipcMain.handle('students:choosePhoto', async () => {
+    requireUser();
+    const result = await dialog.showOpenDialog(window, {
+      title: 'Choose a student photo',
+      properties: ['openFile'],
+      filters: [{ name: 'Student image', extensions: ['jpg', 'jpeg', 'png', 'webp'] }]
+    });
+    if (result.canceled || !result.filePaths.length) return { canceled: true };
+    const filePath = result.filePaths[0];
+    const image = await fs.promises.readFile(filePath);
+    if (image.length > 2 * 1024 * 1024) throw new Error('Student photos must be 2 MB or smaller.');
+    const mime = image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff
+      ? 'image/jpeg'
+      : image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        ? 'image/png'
+        : image.subarray(0, 4).toString('ascii') === 'RIFF' && image.subarray(8, 12).toString('ascii') === 'WEBP'
+          ? 'image/webp'
+          : null;
+    if (!mime) throw new Error('Choose a valid JPEG, PNG or WebP image.');
+    return { canceled: false, data: `data:${mime};base64,${image.toString('base64')}` };
+  });
   ipcMain.handle('records:downloadTemplate', async (_event, kind) => {
     const user = requireUser();
     if (!['students', 'teachers'].includes(kind)) throw new Error('Choose student or teacher records.');
@@ -156,12 +193,39 @@ function registerIpc() {
     const db = getDatabase();
     const values = [String(input.name || '').trim(), String(input.school || ''), String(input.contact1 || '').trim(), String(input.contact2 || ''), input.birthday || null, String(input.address || ''), input.status === 'inactive' ? 'inactive' : 'active'];
     if (!values[0] || !values[2]) throw new Error('Student name and primary contact are required.');
+    const hasPhoto = Object.hasOwn(input, 'photo_data');
+    const photoData = input.photo_data ?? null;
+    if (photoData !== null) {
+      const photoMatch = typeof photoData === 'string'
+        ? photoData.match(/^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/)
+        : null;
+      const image = photoMatch ? Buffer.from(photoMatch[2], 'base64') : null;
+      const actualMime = image && image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff
+        ? 'jpeg'
+        : image && image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+          ? 'png'
+          : image && image.subarray(0, 4).toString('ascii') === 'RIFF' && image.subarray(8, 12).toString('ascii') === 'WEBP'
+            ? 'webp'
+            : null;
+      if (
+        !photoMatch ||
+        !image.length ||
+        image.length > 2 * 1024 * 1024 ||
+        image.toString('base64') !== photoMatch[2] ||
+        actualMime !== photoMatch[1]
+      ) {
+        throw new Error('Choose a valid JPEG, PNG or WebP student photo up to 2 MB.');
+      }
+    }
     if (input.stid) {
-      const result = db.prepare('UPDATE students SET name=?,school=?,contact1=?,contact2=?,birthday=?,address=?,status=? WHERE stid=? AND oid=?').run(...values, input.stid, org());
+      const result = db.prepare(`UPDATE students SET name=?,school=?,contact1=?,contact2=?,birthday=?,address=?,status=?
+        ${hasPhoto ? ',photo_data=?' : ''} WHERE stid=? AND oid=?`)
+        .run(...values, ...(hasPhoto ? [photoData] : []), input.stid, org());
       if (!result.changes) throw new Error('Student not found.');
       return input.stid;
     }
-    return db.prepare('INSERT INTO students (oid,name,school,contact1,contact2,birthday,address,status) VALUES (?,?,?,?,?,?,?,?)').run(org(), ...values).lastInsertRowid;
+    return db.prepare(`INSERT INTO students (oid,name,school,contact1,contact2,birthday,address,status,photo_data)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(org(), ...values, photoData).lastInsertRowid;
   });
   ipcMain.handle('students:delete', (_event, stid) => {
     const result = getDatabase().prepare("UPDATE students SET status='inactive' WHERE stid=? AND oid=?").run(stid, org());
@@ -354,7 +418,8 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('sessions:list', (_event, date = today()) => getDatabase().prepare(`
-    SELECT s.session_id,s.class_id,s.session_date,s.start_time,s.end_time,s.status,c.class_name,c.subject,
+    SELECT s.session_id,s.class_id,s.session_date,s.start_time,s.end_time,s.status,s.ended_automatically,
+      s.register_opened_at,s.class_started_at,s.ended_at,c.class_name,c.subject,
       s.is_special,CASE WHEN s.is_special=1 THEN s.hall_id ELSE COALESCE(s.hall_id,c.hall_id) END AS hall_id,
       h.name AS hall_name,
       (SELECT COUNT(*) FROM attendance a WHERE a.session_id=s.session_id AND a.status='present') AS present_count,
@@ -430,18 +495,30 @@ function registerIpc() {
   });
   ipcMain.handle('sessions:attendance', (_event, sessionId) => {
     const db = getDatabase();
-    const session = db.prepare('SELECT s.session_id,s.status,s.class_id,c.oid FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE s.session_id=? AND c.oid=?').get(sessionId, org());
+    const session = db.prepare('SELECT s.session_id,s.status,s.class_id,s.register_opened_at,s.class_started_at,s.ended_at,s.ended_automatically,c.oid FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE s.session_id=? AND c.oid=?').get(sessionId, org());
     if (!session) throw new Error('Session not found.');
     const dueDay = db.prepare('SELECT payment_due_day FROM organizations WHERE oid=?').get(session.oid).payment_due_day;
-    const attendees = db.prepare(`SELECT a.attendance_id,a.stid,a.status,a.marked_at,s.name,s.rfid,s.school,s.contact1,s.contact2,s.birthday,s.address,s.status AS student_status,e.enrollment_id,e.discount_percentage,e.enrolled_date,c.fee,
+    const attendees = db.prepare(`SELECT a.attendance_id,a.stid,a.status,a.marked_at,a.present_at,
+      CASE WHEN a.present_at IS NOT NULL AND se.class_started_at IS NOT NULL
+        THEN MAX(0,CAST((julianday(a.present_at)-julianday(se.class_started_at))*1440 AS INTEGER)) END AS late_minutes,
+      s.name,s.rfid,s.school,s.contact1,s.contact2,s.birthday,s.address,s.status AS student_status,e.enrollment_id,e.discount_percentage,e.enrolled_date,c.fee,
       p.payment_id,p.amount_paid,
       (SELECT GROUP_CONCAT(for_month) FROM payments WHERE enrollment_id=e.enrollment_id) AS paid_months
       FROM attendance a JOIN students s ON s.stid=a.stid
+      JOIN sessions se ON se.session_id=a.session_id
       JOIN classes c ON c.class_id=?
       LEFT JOIN class_enrollments e ON e.class_id=? AND e.stid=a.stid AND e.status='active'
       LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
       WHERE a.session_id=? ORDER BY s.name COLLATE NOCASE`).all(session.class_id, session.class_id, currentMonth(), sessionId);
-    return attendees.map(attendee => {
+    return {
+      session: {
+        status: session.status,
+        register_opened_at: session.register_opened_at,
+        class_started_at: session.class_started_at,
+        ended_at: session.ended_at,
+        ended_automatically: session.ended_automatically
+      },
+      attendees: attendees.map(attendee => {
       const overdueDates = overduePaymentMonths(
         attendee.enrolled_date,
         attendee.paid_months ? attendee.paid_months.split(',') : [],
@@ -454,7 +531,56 @@ function registerIpc() {
         overdue_since: overdueDates[0]?.due_date || null,
         overdue_months: overdueDates
       };
+      })
+    };
+  });
+  ipcMain.handle('sessions:exportAttendancePDF', async (_event, sessionId) => {
+    const user = requireUser();
+    const db = getDatabase();
+    const session = db.prepare(`SELECT s.session_id,s.session_date,s.start_time,s.end_time,s.status,
+      s.register_opened_at,s.class_started_at,s.ended_at,s.ended_automatically,
+      c.class_name,t.name AS teacher_name,o.name AS organization
+      FROM sessions s JOIN classes c ON c.class_id=s.class_id
+      JOIN teachers t ON t.tid=c.tid JOIN organizations o ON o.oid=c.oid
+      WHERE s.session_id=? AND c.oid=?`).get(Number(sessionId), user.oid);
+    if (!session) throw new Error('Session not found.');
+    const students = db.prepare(`SELECT s.name,a.status,a.marked_at,a.present_at,
+      CASE WHEN a.present_at IS NOT NULL AND se.class_started_at IS NOT NULL
+        THEN MAX(0,CAST((julianday(a.present_at)-julianday(se.class_started_at))*1440 AS INTEGER)) END AS late_minutes
+      FROM attendance a JOIN sessions se ON se.session_id=a.session_id
+      JOIN students s ON s.stid=a.stid
+      WHERE a.session_id=? ORDER BY s.name COLLATE NOCASE`).all(session.session_id);
+    const choice = await dialog.showSaveDialog(window, {
+      title: 'Export session attendance report',
+      defaultPath: `attendance_${session.session_date}_${session.class_name.replace(/[<>:"/\\|?*]/g, '_')}.pdf`,
+      filters: [{ name: 'PDF document', extensions: ['pdf'] }]
     });
+    if (choice.canceled || !choice.filePath) return { canceled: true };
+    const filePath = choice.filePath.toLowerCase().endsWith('.pdf') ? choice.filePath : `${choice.filePath}.pdf`;
+    const reportWindow = new BrowserWindow({
+      show: false,
+      parent: window,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+    });
+    try {
+      const html = buildAttendanceReportHtml({
+        organization: session.organization,
+        session,
+        students,
+        generatedOn: today()
+      });
+      await reportWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+      const pdf = await reportWindow.webContents.printToPDF({
+        pageSize: 'A4',
+        printBackground: true,
+        preferCSSPageSize: true,
+        margins: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 }
+      });
+      await fs.promises.writeFile(filePath, pdf);
+      return { canceled: false, filePath };
+    } finally {
+      if (!reportWindow.isDestroyed()) reportWindow.close();
+    }
   });
   ipcMain.handle('sessions:start', (_event, sessionId) => {
     const db = getDatabase();
@@ -463,22 +589,33 @@ function registerIpc() {
     if (session.status === 'completed' || session.status === 'cancelled') throw new Error('This session cannot be started.');
     db.transaction(() => {
       db.prepare(`INSERT OR IGNORE INTO attendance (session_id,stid,status) SELECT ?,stid,'not_marked' FROM class_enrollments WHERE class_id=? AND status='active'`).run(sessionId, session.class_id);
-      db.prepare("UPDATE sessions SET status='ongoing' WHERE session_id=?").run(sessionId);
+      db.prepare("UPDATE sessions SET status='ongoing',register_opened_at=COALESCE(register_opened_at,CURRENT_TIMESTAMP) WHERE session_id=?").run(sessionId);
     })();
     return true;
   });
+  ipcMain.handle('sessions:classStarted', (_event, sessionId) => {
+    const result = getDatabase().prepare(`UPDATE sessions SET class_started_at=CURRENT_TIMESTAMP
+      WHERE session_id=? AND status='ongoing' AND class_started_at IS NULL
+      AND class_id IN (SELECT class_id FROM classes WHERE oid=?)`).run(sessionId, org());
+    if (!result.changes) throw new Error('Only an open session that has not started can be marked as class started.');
+    return getDatabase().prepare('SELECT class_started_at FROM sessions WHERE session_id=?').get(sessionId).class_started_at;
+  });
   ipcMain.handle('sessions:mark', (_event, { session_id, stid, status }) => {
     if (!['present','absent'].includes(status)) throw new Error('Attendance status must be present or absent.');
-    const result = getDatabase().prepare(`UPDATE attendance SET status=?,marked_at=CURRENT_TIMESTAMP WHERE session_id=? AND stid=? AND session_id IN (SELECT s.session_id FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE c.oid=? AND s.status='ongoing')`).run(status, session_id, stid, org());
+    const result = getDatabase().prepare(`UPDATE attendance SET status=?,marked_at=CURRENT_TIMESTAMP,
+      present_at=CASE WHEN ?='present' THEN CURRENT_TIMESTAMP ELSE NULL END
+      WHERE session_id=? AND stid=? AND session_id IN (SELECT s.session_id FROM sessions s JOIN classes c ON c.class_id=s.class_id WHERE c.oid=? AND s.status='ongoing')`).run(status, status, session_id, stid, org());
     if (!result.changes) throw new Error('Attendance could not be updated. Start the session first.');
     return true;
   });
   ipcMain.handle('sessions:end', (_event, sessionId) => {
     const db = getDatabase();
     const endSession = db.transaction(() => {
-      const result = db.prepare(`UPDATE sessions SET status='completed' WHERE session_id=? AND status='ongoing' AND class_id IN (SELECT class_id FROM classes WHERE oid=?)`).run(sessionId, org());
-      if (!result.changes) throw new Error('Only an ongoing session can be ended.');
-      db.prepare("UPDATE attendance SET status='absent',marked_at=CURRENT_TIMESTAMP WHERE session_id=? AND status='not_marked'").run(sessionId);
+      const session = db.prepare(`SELECT s.session_id FROM sessions s JOIN classes c ON c.class_id=s.class_id
+        WHERE s.session_id=? AND c.oid=? AND s.status='ongoing'`).get(sessionId, org());
+      if (!session || !completeOngoingSession(db, session.session_id)) {
+        throw new Error('Only an ongoing session can be ended.');
+      }
     });
     endSession();
     return true;
@@ -551,6 +688,65 @@ function registerIpc() {
       LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
       WHERE c.oid=? AND c.status='active' GROUP BY c.class_id ORDER BY t.name,c.class_name`).all(month, org());
   });
+  ipcMain.handle('reports:exportClassPaymentPDF', async (_event, year) => {
+    const user = requireUser();
+    const reportYear = String(typeof year === 'object' ? year.year : year);
+    if (!/^\d{4}$/.test(reportYear)) throw new Error('Choose a valid report year.');
+    const classId = typeof year === 'object' && year.class_id !== undefined ? Number(year.class_id) : null;
+    if (classId !== null && (!Number.isInteger(classId) || classId < 1)) throw new Error('Choose a valid class.');
+    const classFilter = classId === null ? '' : ' AND c.class_id=?';
+    const rows = getDatabase().prepare(`SELECT c.class_id,c.class_name,t.name AS teacher_name,
+        s.stid,s.name AS student_name
+      FROM classes c JOIN teachers t ON t.tid=c.tid
+      LEFT JOIN class_enrollments e ON e.class_id=c.class_id AND e.status='active'
+      LEFT JOIN students s ON s.stid=e.stid AND s.status='active'
+      WHERE c.oid=? AND c.status='active'${classFilter}
+      ORDER BY c.class_name COLLATE NOCASE,s.name COLLATE NOCASE`)
+      .all(...(classId === null ? [user.oid] : [user.oid, classId]));
+    if (classId !== null && !rows.length) throw new Error('Class not found in this organization.');
+    const classesById = new Map();
+    for (const row of rows) {
+      let classRecord = classesById.get(row.class_id);
+      if (!classRecord) {
+        classRecord = { class_name: row.class_name, teacher_name: row.teacher_name, students: [] };
+        classesById.set(row.class_id, classRecord);
+      }
+      if (row.stid !== null) classRecord.students.push({ name: row.student_name });
+    }
+    const classes = [...classesById.values()];
+    const choice = await dialog.showSaveDialog(window, {
+      title: 'Export annual class payment register',
+      defaultPath: `${classes.length === 1 ? `${classes[0].class_name.replace(/[<>:"/\\|?*]/g, '_')}_` : ''}class_payments_${reportYear}.pdf`,
+      filters: [{ name: 'PDF document', extensions: ['pdf'] }]
+    });
+    if (choice.canceled || !choice.filePath) return { canceled: true };
+    const filePath = choice.filePath.toLowerCase().endsWith('.pdf') ? choice.filePath : `${choice.filePath}.pdf`;
+    const reportWindow = new BrowserWindow({
+      show: false,
+      parent: window,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+    });
+    try {
+      const html = buildClassPaymentReportHtml({
+        organization: user.organization,
+        year: reportYear,
+        classes,
+        generatedOn: today()
+      });
+      await reportWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+      const pdf = await reportWindow.webContents.printToPDF({
+        pageSize: 'A4',
+        landscape: false,
+        printBackground: true,
+        preferCSSPageSize: true,
+        margins: { top: 0.35, bottom: 0.35, left: 0.35, right: 0.35 }
+      });
+      await fs.promises.writeFile(filePath, pdf);
+    } finally {
+      if (!reportWindow.isDestroyed()) reportWindow.close();
+    }
+    return { canceled: false, filePath };
+  });
   ipcMain.handle('reports:teacherBalances', () => getDatabase().prepare(`
     SELECT t.tid,t.name,
       COALESCE((SELECT SUM(p.amount_paid*c.teacher_commission_percentage/100.0)
@@ -621,6 +817,31 @@ function registerIpc() {
       WHERE ${clauses.join(' AND ')} AND a.status IN ('present','absent')
       ORDER BY se.session_date DESC,s.name COLLATE NOCASE,c.class_name`).all(...params);
   });
+  ipcMain.handle('reports:sessions', (_event, filters = {}) => {
+    const startDate = String(filters.start_date || '');
+    const endDate = String(filters.end_date || '');
+    if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) {
+      throw new Error('Choose a valid session date range.');
+    }
+    const params = [org(), startDate, endDate];
+    let teacherFilter = '';
+    if (filters.tid) {
+      const teacherId = Number(filters.tid);
+      if (!Number.isInteger(teacherId) || teacherId < 1) throw new Error('Choose a valid teacher.');
+      teacherFilter = ' AND t.tid=?';
+      params.push(teacherId);
+    }
+    return getDatabase().prepare(`SELECT se.session_id,se.session_date,se.start_time,se.end_time,se.status,
+        c.class_name,t.tid,t.name AS teacher_name,
+        (SELECT COUNT(*) FROM class_enrollments e
+          WHERE e.class_id=c.class_id AND e.status='active' AND substr(e.enrolled_date,1,10)<=se.session_date) AS enrolled_count,
+        (SELECT COUNT(*) FROM attendance a
+          WHERE a.session_id=se.session_id AND a.status='present') AS present_count
+      FROM sessions se JOIN classes c ON c.class_id=se.class_id
+      JOIN teachers t ON t.tid=c.tid
+      WHERE c.oid=? AND se.session_date BETWEEN ? AND ? AND se.status!='cancelled'${teacherFilter}
+      ORDER BY se.session_date DESC,se.start_time,c.class_name COLLATE NOCASE`).all(...params);
+  });
   ipcMain.handle('reports:pendingPayments', (_event, month = currentMonth()) => {
     if (!validMonth(month) || month > currentMonth()) throw new Error('Choose a payment month up to the current month.');
     return getDatabase().prepare(`SELECT e.enrollment_id,e.stid,s.name AS student_name,s.rfid,c.class_id,c.class_name,t.name AS teacher_name,
@@ -649,6 +870,72 @@ function registerIpc() {
     });
     await fs.promises.writeFile(filePath, pdf);
     return { canceled: false, filePath };
+  });
+  ipcMain.handle('reports:exportDailySummaryPDF', async (_event, date = today()) => {
+    const user = requireUser();
+    if (!validDate(date)) throw new Error('Choose a valid report date.');
+    const db = getDatabase();
+    const activeStudentCount = db.prepare("SELECT COUNT(*) AS count FROM students WHERE oid=? AND status='active'").get(user.oid).count;
+    const totalReceived = db.prepare(`SELECT COALESCE(SUM(p.amount_paid),0) AS total
+      FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+      JOIN classes c ON c.class_id=e.class_id WHERE c.oid=? AND p.payment_date=?`).get(user.oid, date).total;
+    const totalTeacherPayouts = db.prepare(`SELECT COALESCE(SUM(p.amount),0) AS total
+      FROM teacher_payouts p JOIN teachers t ON t.tid=p.tid
+      WHERE t.oid=? AND p.payout_date=?`).get(user.oid, date).total;
+    const classPayments = db.prepare(`SELECT c.class_name,t.name AS teacher_name,
+        COUNT(DISTINCT e.stid) AS student_count,SUM(p.amount_paid) AS amount_received
+      FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+      JOIN classes c ON c.class_id=e.class_id JOIN teachers t ON t.tid=c.tid
+      WHERE c.oid=? AND p.payment_date=?
+      GROUP BY c.class_id ORDER BY c.class_name COLLATE NOCASE`).all(user.oid, date);
+    const teacherPayouts = db.prepare(`SELECT t.name AS teacher_name,p.amount
+      FROM teacher_payouts p JOIN teachers t ON t.tid=p.tid
+      WHERE t.oid=? AND p.payout_date=? ORDER BY t.name COLLATE NOCASE,p.payout_id`).all(user.oid, date);
+    const sessions = db.prepare(`SELECT s.session_id,s.start_time,s.end_time,s.status,c.class_name,t.name AS teacher_name,
+        (SELECT COUNT(*) FROM class_enrollments e WHERE e.class_id=c.class_id AND e.status='active'
+          AND substr(e.enrolled_date,1,10)<=s.session_date) AS enrolled_count,
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id=s.session_id AND a.status='present') AS present_count,
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id=s.session_id AND a.status='absent') AS absent_count,
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id=s.session_id AND a.status='not_marked') AS not_marked_count
+      FROM sessions s JOIN classes c ON c.class_id=s.class_id JOIN teachers t ON t.tid=c.tid
+      WHERE c.oid=? AND s.session_date=? AND s.status!='cancelled'
+      ORDER BY s.start_time,c.class_name COLLATE NOCASE`).all(user.oid, date);
+    const choice = await dialog.showSaveDialog(window, {
+      title: 'Export daily summary report',
+      defaultPath: `daily_summary_${date}.pdf`,
+      filters: [{ name: 'PDF document', extensions: ['pdf'] }]
+    });
+    if (choice.canceled || !choice.filePath) return { canceled: true };
+    const filePath = choice.filePath.toLowerCase().endsWith('.pdf') ? choice.filePath : `${choice.filePath}.pdf`;
+    const reportWindow = new BrowserWindow({
+      show: false,
+      parent: window,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+    });
+    try {
+      const html = buildDailySummaryReportHtml({
+        organization: user.organization,
+        date,
+        activeStudentCount,
+        totalReceived,
+        totalTeacherPayouts,
+        classPayments,
+        teacherPayouts,
+        sessions,
+        generatedOn: today()
+      });
+      await reportWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+      const pdf = await reportWindow.webContents.printToPDF({
+        pageSize: 'A4',
+        printBackground: true,
+        preferCSSPageSize: true,
+        margins: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 }
+      });
+      await fs.promises.writeFile(filePath, pdf);
+      return { canceled: false, filePath };
+    } finally {
+      if (!reportWindow.isDestroyed()) reportWindow.close();
+    }
   });
   ipcMain.handle('payouts:list', (_event, filters = {}) => {
     const clauses = ['t.oid=?'];
@@ -781,9 +1068,27 @@ function getPendingTotal(oid, month) {
   return money(result.amount);
 }
 
+function scheduleSessionAutoEnd(retryDelay) {
+  const now = new Date();
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 0, 0);
+  const delay = retryDelay ?? Math.max(1, nextMidnight.getTime() - now.getTime());
+  setTimeout(() => {
+    try {
+      endExpiredSessions(getDatabase(), localDate());
+      scheduleSessionAutoEnd();
+    } catch (error) {
+      console.error('Failed to automatically end expired sessions:', error);
+      scheduleSessionAutoEnd(60 * 1000);
+    }
+  }, delay);
+}
+
 app.whenReady().then(() => {
-  openDatabase(path.join(app.getPath('userData'), 'app.db'));
+  const db = openDatabase(path.join(app.getPath('userData'), 'app.db'));
+  endExpiredSessions(db, localDate());
   registerIpc();
+  scheduleSessionAutoEnd();
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

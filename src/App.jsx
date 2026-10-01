@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import defaultProfilePhoto from "../assets/proflimg.jpg";
 import {
   Activity,
   ArrowDownToLine,
@@ -84,20 +85,6 @@ const money = (amount) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number(amount || 0));
-const downloadCsv = (filename, headers, records) => {
-  const cell = (value) => {
-    let text = String(value ?? "");
-    if (/^[=+\-@]/.test(text)) text = `'${text}`;
-    return `"${text.replaceAll('"', '""')}"`;
-  };
-  const content = [headers, ...records].map((row) => row.map(cell).join(",")).join("\r\n");
-  const url = URL.createObjectURL(new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-};
 const roundMoney = (amount) =>
   Math.round((Number(amount) + Number.EPSILON) * 100) / 100;
 const prettyDate = (date) =>
@@ -108,6 +95,13 @@ const prettyDate = (date) =>
         year: "numeric",
       })
     : "—";
+const prettyTimestamp = (timestamp) => {
+  if (!timestamp) return "—";
+  const date = new Date(`${String(timestamp).replace(" ", "T")}Z`);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+};
 const initials = (name = "") =>
   name
     .split(/\s+/)
@@ -127,23 +121,24 @@ const availabilityLabel = (slots) =>
     : "No availability set";
 const navGroups = [
   {
-    label: "Workspace",
+    label: "Manage",
     items: [
       ["Overview", "overview", LayoutDashboard],
+      ["Attendance", "attendance", CheckCheck],
+      ["Payments", "payments", CreditCard],
+      ["Reports", "reports", Activity],
+    ],
+  },{
+    label: "Workspace",
+    items: [
+      
       ["Students", "students", Users],
       ["Teachers", "teachers", GraduationCap],
       ["Classes", "classes", BookOpen],
       ["Halls", "halls", DoorOpen],
     ],
-  },
-  {
-    label: "Manage",
-    items: [
-      ["Attendance", "attendance", CheckCheck],
-      ["Payments", "payments", CreditCard],
-      ["Reports", "reports", Activity],
-    ],
-  },
+  }
+  
 ];
 
 function App() {
@@ -692,8 +687,30 @@ function Status({ value }) {
     </span>
   );
 }
-function Avatar({ name, color = "blue" }) {
-  return <div className={`avatar avatar-${color}`}>{initials(name)}</div>;
+function Avatar({ name, color = "blue", photo, className = "" }) {
+  return photo ? (
+    <img
+      className={`avatar avatar-photo ${className}`}
+      src={photo}
+      alt={`${name} profile`}
+      onError={(event) => { event.currentTarget.src = defaultProfilePhoto; }}
+    />
+  ) : (
+    <div className={`avatar avatar-${color} ${className}`}>{initials(name)}</div>
+  );
+}
+function StudentAvatar({ stid, name, version, className = "" }) {
+  const { data } = useLoad(
+    () => stid ? api.students.photo(stid) : Promise.resolve(null),
+    [stid, version],
+  );
+  return (
+    <Avatar
+      name={name}
+      photo={data || defaultProfilePhoto}
+      className={className}
+    />
+  );
 }
 function EmptyState({ title, detail, action }) {
   return (
@@ -1192,7 +1209,7 @@ function StudentsPage({ version, refresh, setModal, notify }) {
                   >
                     <td>
                       <div className="person-cell">
-                        <Avatar name={student.name} />
+                        <StudentAvatar stid={student.stid} name={student.name} version={version} />
                         <div>
                           <b>{student.name}</b>
                           <span>
@@ -1843,12 +1860,16 @@ function AttendancePage({ version, refresh, setModal, notify }) {
                 {session.hall_name && <span><DoorOpen size={14} />{session.hall_name}</span>}
               </div>
               <div className="attendance-card-footer">
-                <span>
-                  {session.status === "ongoing"
-                    ? "Register is open"
-                    : session.status === "completed"
-                      ? "Register completed"
-                      : "Ready for roll call"}
+                <span className={session.ended_automatically ? "session-auto-ended-label" : ""}>
+                  {session.ended_automatically
+                    ? "Automatically ended"
+                    : session.status === "ongoing"
+                      ? session.class_started_at
+                        ? `Class started at ${prettyTimestamp(session.class_started_at)}`
+                        : "Register is open"
+                      : session.status === "completed"
+                        ? "Register completed"
+                        : "Ready for roll call"}
                 </span>
                 <Button
                   kind={session.status === "ongoing" ? "primary" : "secondary"}
@@ -2094,7 +2115,7 @@ function PaymentsPage({ version, setModal, notify }) {
                     </td>
                     <td>
                       <div className="person-cell">
-                        <Avatar name={row.name} />
+                        <StudentAvatar stid={row.stid} name={row.name} version={version} />
                         <div>
                           <b>{row.name}</b>
                           <span>Monthly tuition</span>
@@ -2376,7 +2397,13 @@ function TeacherPaymentsPanel({ version, setModal, notify }) {
 
 function ReportsPage({ version, setModal, notify, user }) {
   const [month, setMonth] = useState(thisMonth());
+  const [summaryDate, setSummaryDate] = useState(today());
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [classReportBusy, setClassReportBusy] = useState(false);
   const [reportSection, setReportSection] = useState("students");
+  const [sessionStartDate, setSessionStartDate] = useState(today());
+  const [sessionEndDate, setSessionEndDate] = useState(today());
+  const [sessionTeacherId, setSessionTeacherId] = useState("");
   const [reportStudentId, setReportStudentId] = useState("");
   const [historyYear, setHistoryYear] = useState("");
   const [historyMonth, setHistoryMonth] = useState("");
@@ -2391,6 +2418,7 @@ function ReportsPage({ version, setModal, notify, user }) {
   const [historyPage, setHistoryPage] = useState(1);
   const [payoutPage, setPayoutPage] = useState(1);
   const [pendingPage, setPendingPage] = useState(1);
+  const [sessionPage, setSessionPage] = useState(1);
   const currentReportMonth = thisMonth();
   const earnings = useLoad(() => api.reports.classEarnings(month), [month, version]);
   const todayEarnings = useLoad(
@@ -2403,6 +2431,15 @@ function ReportsPage({ version, setModal, notify, user }) {
   const pendingRecords = useLoad(() => api.reports.pendingPayments(month), [month, version]);
   const classes = useLoad(() => api.classes.list(), [version]);
   const students = useLoad(() => api.students.list(), [version]);
+  const teachers = useLoad(() => api.teachers.list(), [version]);
+  const sessionReport = useLoad(
+    () => api.reports.sessions({
+      start_date: sessionStartDate,
+      end_date: sessionEndDate,
+      tid: sessionTeacherId ? Number(sessionTeacherId) : undefined,
+    }),
+    [sessionStartDate, sessionEndDate, sessionTeacherId, version],
+  );
   const attendance = useLoad(
     () => api.reports.studentAttendance({
       stid: reportStudentId ? Number(reportStudentId) : undefined,
@@ -2444,6 +2481,10 @@ function ReportsPage({ version, setModal, notify, user }) {
   const orgTotal = data.reduce((sum, row) => sum + Number(row.org_earnings), 0);
   const pendingTeacher = data.reduce((sum, row) => sum + Number(row.pending_teacher), 0);
   const pendingOrg = data.reduce((sum, row) => sum + Number(row.pending_org), 0);
+  const totalPendingTeacher = (balances.data || []).reduce(
+    (sum, row) => sum + Number(row.outstanding),
+    0,
+  );
   const paidToTeachers = (payouts.data || []).reduce(
     (sum, row) => sum + (row.payout_date.slice(0, 7) === month ? Number(row.amount) : 0),
     0,
@@ -2458,6 +2499,30 @@ function ReportsPage({ version, setModal, notify, user }) {
       if (!result.canceled) notify("Report exported as a PDF.");
     } catch (err) {
       notify(err.message, "error");
+    }
+  };
+  const exportDailySummary = async () => {
+    if (!summaryDate || summaryBusy) return;
+    setSummaryBusy(true);
+    try {
+      const result = await api.reports.exportDailySummaryPDF(summaryDate);
+      if (!result.canceled) notify("Daily summary report exported as a PDF.");
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setSummaryBusy(false);
+    }
+  };
+  const exportClassPaymentReport = async () => {
+    if (classReportBusy) return;
+    setClassReportBusy(true);
+    try {
+      const result = await api.reports.exportClassPaymentPDF(month.slice(0, 4));
+      if (!result.canceled) notify("Annual class payment register exported as a PDF.");
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setClassReportBusy(false);
     }
   };
   return (
@@ -2495,13 +2560,13 @@ function ReportsPage({ version, setModal, notify, user }) {
         </div>
         <div className="stat-card">
           <div className="stat-icon"><Wallet size={18} /></div>
-          <div className="stat-label">Pending amount</div>
-          <div className="stat-value">{earnings.data ? money(pendingOrg) : "—"}</div>
-          <div className="stat-foot">Institute share from unpaid {month} fees</div>
+          <div className="stat-label">Total pending teacher payments up to today</div>
+          <div className="stat-value">{balances.data ? money(totalPendingTeacher) : "—"}</div>
+          <div className="stat-foot">Outstanding teacher balance across all classes</div>
         </div>
         <div className="stat-card">
           <div className="stat-icon"><CreditCard size={18} /></div>
-          <div className="stat-label">Paid to teachers</div>
+          <div className="stat-label">Teachers Payouts</div>
           <div className="stat-value">{payouts.data ? money(paidToTeachers) : "—"}</div>
           <div className="stat-foot">Payouts recorded during {month}</div>
         </div>
@@ -2513,13 +2578,79 @@ function ReportsPage({ version, setModal, notify, user }) {
         </div>
       </div>
       {earnings.error && <div className="error-inline">{earnings.error}</div>}
+      {balances.error && <div className="error-inline">{balances.error}</div>}
       {todayEarnings.error && <div className="error-inline">{todayEarnings.error}</div>}
       {payouts.error && <div className="error-inline">{payouts.error}</div>}
+      <section className="daily-summary-launch">
+        <div className="daily-summary-copy">
+          <div className="daily-summary-icon"><CalendarDays size={24} /></div>
+          <div>
+            <h2>Daily summary report</h2>
+            <p>Payments received, teacher payouts, student totals and session attendance in one PDF.</p>
+          </div>
+        </div>
+        <div className="daily-summary-actions">
+          <label>
+            <span>Report date</span>
+            <input type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} />
+          </label>
+          <Button className="daily-summary-button" icon={Download} onClick={exportDailySummary} disabled={!summaryDate || summaryBusy}>
+            {summaryBusy ? "Preparing report…" : `${summaryDate === today() ? "Today" : prettyDate(summaryDate)} summary PDF`}
+          </Button>
+        </div>
+      </section>
       <div className="report-tabs" role="tablist" aria-label="Report sections">
         <button className={reportSection === "students" ? "active" : ""} onClick={() => setReportSection("students")}>Student reports</button>
         <button className={reportSection === "teachers" ? "active" : ""} onClick={() => setReportSection("teachers")}>Teacher reports</button>
         <button className={reportSection === "classes" ? "active" : ""} onClick={() => setReportSection("classes")}>Class reports</button>
+        <button className={reportSection === "sessions" ? "active" : ""} onClick={() => setReportSection("sessions")}>Sessions</button>
       </div>
+      {reportSection === "sessions" && (
+        <section className="panel data-panel payout-panel">
+          <div className="report-heading">
+            <div><h2>Session report</h2><p>Sessions held, teachers, and attendance for the selected date or date range.</p></div>
+          </div>
+          <div className="history-filter-row">
+            <label>From date
+              <input type="date" className="month-input" value={sessionStartDate} max={sessionEndDate} onChange={(event) => { setSessionStartDate(event.target.value); setSessionPage(1); }} />
+            </label>
+            <label>To date
+              <input type="date" className="month-input" value={sessionEndDate} min={sessionStartDate} onChange={(event) => { setSessionEndDate(event.target.value); setSessionPage(1); }} />
+            </label>
+            <label>Teacher
+              <SearchableSelect
+                value={sessionTeacherId}
+                ariaLabel="Filter sessions by teacher"
+                placeholder="Search a teacher…"
+                options={[
+                  { value: "", label: "All teachers" },
+                  ...(teachers.data || []).map((teacher) => ({ value: String(teacher.tid), label: teacher.name })),
+                ]}
+                onValueChange={(value) => { setSessionTeacherId(value); setSessionPage(1); }}
+              />
+            </label>
+          </div>
+          {sessionReport.error && <div className="error-inline">{sessionReport.error}</div>}
+          {sessionReport.data?.length ? (
+            <>
+              <div className="table-wrap"><table>
+                <thead><tr><th>DATE</th><th>CLASS</th><th>TIME</th><th>TEACHER</th><th>STUDENTS PRESENT</th><th>STATUS</th></tr></thead>
+                <tbody>{pageSlice(sessionReport.data, sessionPage).map((row) => (
+                  <tr key={row.session_id}>
+                    <td>{prettyDate(row.session_date)}</td>
+                    <td><b>{row.class_name}</b></td>
+                    <td>{[row.start_time, row.end_time].filter(Boolean).join(" – ") || "Not set"}</td>
+                    <td>{row.teacher_name}</td>
+                    <td><b>{row.present_count} / {row.enrolled_count}</b></td>
+                    <td><Status value={row.status} /></td>
+                  </tr>
+                ))}</tbody>
+              </table></div>
+              <Pagination count={sessionReport.data.length} page={sessionPage} setPage={setSessionPage} />
+            </>
+          ) : !sessionReport.error && <div className="payout-empty">No sessions found for the selected date range and teacher.</div>}
+        </section>
+      )}
       {reportSection === "classes" && (
       <>
       <div className="report-metrics">
@@ -2529,7 +2660,12 @@ function ReportsPage({ version, setModal, notify, user }) {
         <div><span>Organization share</span><b>{money(orgTotal)}</b><small>{money(pendingOrg)} share of outstanding fees</small></div>
       </div>
       <div className="panel data-panel report-table">
-        <div className="report-heading"><div><h2>Class earnings</h2><p>Per-class breakdown for {month}</p></div></div>
+        <div className="report-heading">
+          <div><h2>Class earnings</h2><p>Per-class breakdown for {month}</p></div>
+          <Button kind="secondary" icon={Download} onClick={exportClassPaymentReport} disabled={classReportBusy}>
+            {classReportBusy ? "Preparing PDF…" : `Print ${month.slice(0, 4)} Payment Sheets`}
+          </Button>
+        </div>
         <TableToolbar count={filteredClasses.length} placeholder="Search class or teacher…" query={classQuery} setQuery={(value) => { setClassQuery(value); setClassPage(1); }} />
         {filteredClasses.length ? (
           <>
@@ -2562,7 +2698,6 @@ function ReportsPage({ version, setModal, notify, user }) {
           <div><h2>Teacher payout balances</h2><p>Total earned from recorded tuition minus all payouts to date</p></div>
           <Button kind="secondary" icon={Plus} onClick={() => setModal({ type: "payout-form" })}>Add payout</Button>
         </div>
-        {balances.error && <div className="error-inline">{balances.error}</div>}
         <TableToolbar count={filteredBalances.length} placeholder="Search teacher balances…" query={balanceQuery} setQuery={(value) => { setBalanceQuery(value); setBalancePage(1); }} />
         {filteredBalances.length ? (
           <>
@@ -2912,6 +3047,7 @@ function ModalHost({
     ) : modal.type === "session" ? (
       <SessionModal
         session={modal.session}
+        version={version}
         close={close}
         refresh={refresh}
         notify={notify}
@@ -3139,14 +3275,34 @@ function StudentForm({ student, close, finish, notify }) {
     address: student?.address || "",
     status: student?.status || "active",
   });
+  const [photoData, setPhotoData] = useState(undefined);
+  const [photoError, setPhotoError] = useState("");
+  const { data: savedPhoto } = useLoad(
+    () => student ? api.students.photo(student.stid) : Promise.resolve(null),
+    [student?.stid],
+  );
+  const displayedPhoto = photoData === undefined ? savedPhoto : photoData;
   const [saving, setSaving] = useState(false);
   const change = (key) => (event) =>
     setForm({ ...form, [key]: event.target.value });
+  const choosePhoto = async () => {
+    setPhotoError("");
+    try {
+      const result = await api.students.choosePhoto();
+      if (!result.canceled) setPhotoData(result.data);
+    } catch (err) {
+      setPhotoError(err.message);
+    }
+  };
   const submit = async (event) => {
     event.preventDefault();
     setSaving(true);
     try {
-      await api.students.save({ ...form, stid: student?.stid });
+      await api.students.save({
+        ...form,
+        stid: student?.stid,
+        ...(photoData !== undefined ? { photo_data: photoData } : {}),
+      });
       notify(
         student ? "Student details updated." : "Student added successfully.",
       );
@@ -3166,6 +3322,32 @@ function StudentForm({ student, close, finish, notify }) {
         close={close}
       />
       <form className="modal-form" onSubmit={submit}>
+        <div className="student-photo-picker">
+          <Avatar
+            name={form.name || "Student"}
+            photo={displayedPhoto || defaultProfilePhoto}
+            className="student-photo-preview"
+          />
+          <div className="student-photo-controls">
+            <b>Student photo <span>Optional</span></b>
+            <small>JPEG, PNG or WebP, up to 2 MB.</small>
+            <div>
+              <Button kind="secondary" type="button" onClick={choosePhoto}>
+                {displayedPhoto ? "Change photo" : "Choose photo"}
+              </Button>
+              {displayedPhoto && (
+                <button
+                  type="button"
+                  className="text-link"
+                  onClick={() => setPhotoData(null)}
+                >
+                  Remove photo
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+        {photoError && <div className="form-error">{photoError}</div>}
         <Field
           label="Student’s full name"
           required
@@ -3797,6 +3979,7 @@ function EnrollmentForm({ version, close, finish, notify }) {
 }
 
 function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
+  const [paymentReportBusy, setPaymentReportBusy] = useState(false);
   const { data: detail, error } = useLoad(
     () => api.classes.detail(classItem.class_id),
     [version],
@@ -3830,17 +4013,20 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
     roundMoney(Number(classItem.fee) * (1 - Number(discount || 0) / 100));
   const shareFor = (discount, commission) =>
     roundMoney((feeFor(discount) * Number(commission || 0)) / 100);
-  const exportEnrolledStudents = () => {
-    downloadCsv(
-      `${classItem.class_name.trim().replace(/[^\w-]+/g, "_")}_students.csv`,
-      ["Class", "Student name", "RFID", "Discount percentage"],
-      activeEnrollments.map((enrollment) => [
-        classItem.class_name,
-        enrollment.name,
-        enrollment.rfid || "",
-        enrollment.discount_percentage,
-      ]),
-    );
+  const exportPaymentRegister = async () => {
+    if (paymentReportBusy) return;
+    setPaymentReportBusy(true);
+    try {
+      const result = await api.reports.exportClassPaymentPDF({
+        year: thisMonth().slice(0, 4),
+        class_id: classItem.class_id,
+      });
+      if (!result.canceled) notify("Class payment register exported as a PDF.");
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setPaymentReportBusy(false);
+    }
   };
   const saveEnrollments = async () => {
     setSaving(true);
@@ -3907,7 +4093,9 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
             </span>
           </b>
           <div className="heading-actions">
-            <Button kind="secondary" icon={Download} onClick={exportEnrolledStudents} disabled={!activeEnrollments.length}>Export students</Button>
+            <Button kind="secondary" icon={Download} onClick={exportPaymentRegister} disabled={paymentReportBusy}>
+              {paymentReportBusy ? "Preparing PDF…" : "Payment register PDF"}
+            </Button>
             <button className="text-link" onClick={() => setModal({ type: "class-form", classItem })}>Edit class</button>
           </div>
         </div>
@@ -3931,7 +4119,7 @@ function ClassDetail({ classItem, version, close, setModal, refresh, notify }) {
                 className="roster-row roster-discount-row"
                 key={enrollment.enrollment_id}
               >
-                <Avatar name={enrollment.name} />
+                <StudentAvatar stid={enrollment.stid} name={enrollment.name} version={version} />
                 <div className="roster-name">
                   <b>{enrollment.name}</b>
                   <span>
@@ -4250,7 +4438,7 @@ function StudentDetail({
       />
       <div className="student-detail">
         <div className="student-detail-top">
-          <Avatar name={student.name} />
+          <StudentAvatar stid={student.stid} name={student.name} version={version} />
           <div>
             <b>{student.name}</b>
             <span>
@@ -4524,9 +4712,13 @@ function SpecialSessionForm({ date, close, finish, notify }) {
   );
 }
 
-function SessionModal({ session, close, refresh, notify, setModal }) {
+function SessionModal({ session, version, close, refresh, notify, setModal }) {
   const [rows, setRows] = useState(null);
   const [status, setStatus] = useState(session.status);
+  const [registerOpenedAt, setRegisterOpenedAt] = useState(session.register_opened_at || null);
+  const [classStartedAt, setClassStartedAt] = useState(session.class_started_at || null);
+  const [endedAt, setEndedAt] = useState(session.ended_at || null);
+  const [endedAutomatically, setEndedAutomatically] = useState(Boolean(session.ended_automatically));
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [rosterPage, setRosterPage] = useState(1);
@@ -4536,8 +4728,21 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
   const scanning = useRef(false);
   const load = useCallback(async () => {
     const result = await api.sessions.attendance(session.session_id);
-    setRows(result);
+    setRows(result.attendees);
+    setStatus(result.session.status);
+    setRegisterOpenedAt(result.session.register_opened_at);
+    setClassStartedAt(result.session.class_started_at);
+    setEndedAt(result.session.ended_at);
+    setEndedAutomatically(Boolean(result.session.ended_automatically));
   }, [session.session_id]);
+  const exportAttendance = async () => {
+    try {
+      const result = await api.sessions.exportAttendancePDF(session.session_id);
+      if (!result.canceled) notify("Session attendance report exported as a PDF.");
+    } catch (err) {
+      notify(err.message, "error");
+    }
+  };
   useEffect(() => {
     load().catch((err) => notify(err.message, "error"));
   }, [load]);
@@ -4570,6 +4775,20 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
     } catch (err) {
       notify(err.message, "error");
       return false;
+    }
+  };
+  const classStarted = async () => {
+    setBusy(true);
+    try {
+      const timestamp = await api.sessions.classStarted(session.session_id);
+      setClassStartedAt(timestamp);
+      await load();
+      refresh();
+      notify(`Class started at ${prettyTimestamp(timestamp)}.`);
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy(false);
     }
   };
   const scanCard = async (value = query.trim()) => {
@@ -4687,10 +4906,42 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
             </Button>
           </div>
         )}
-        {status === "completed" && (
+        {status === "ongoing" && (
+          <div className="session-start-banner session-class-start-banner">
+            <div className="session-start-icon">
+              <Clock3 size={18} />
+            </div>
+            <div>
+              <b>{classStartedAt ? `Class started at ${prettyTimestamp(classStartedAt)}` : "Register is open"}</b>
+              <span>
+                {classStartedAt
+                  ? `Register opened at ${prettyTimestamp(registerOpenedAt)}. Student arrival times are recorded.`
+                  : "Record when teaching begins to track late arrivals. Unmarked students become absent when the session ends."}
+              </span>
+            </div>
+            <div className="session-stage-actions">
+              {!classStartedAt && (
+                <Button onClick={classStarted} disabled={busy}>
+                  Class Started
+                </Button>
+              )}
+              <Button kind="secondary" onClick={end} disabled={busy}>
+                End session <CheckCheck size={15} />
+              </Button>
+            </div>
+          </div>
+        )}
+        {status === "completed" && endedAutomatically ? (
+          <div className="session-auto-ended-banner" role="status">
+            <b>This session was ended automatically.</b>
+            <span>Please end the session after class; do not wait for the system to close it.</span>
+          </div>
+        ) : status === "completed" && (
           <div className="session-complete-banner">
             <CheckCheck size={16} />
-            This session is complete. The register is read-only.
+            {endedAt
+              ? `This session ended at ${prettyTimestamp(endedAt)}. The register is read-only.`
+              : "This session is complete. The register is read-only."}
           </div>
         )}
         <div className="session-roster-top">
@@ -4701,29 +4952,34 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
               {rows?.length || 0} present
             </span>
           </div>
-          <div className="table-search">
-            <Search size={15} />
-            <input
-              ref={scanInput}
-              placeholder="Search name or scan RFID…"
-              value={query}
-              onChange={(event) => {
-                const value = event.target.value;
-                setQuery(value);
-                const scannedStudent = (rows || []).find(
-                  (row) =>
-                    row.rfid &&
-                    row.rfid.trim().toLowerCase() === value.trim().toLowerCase(),
-                );
-                if (scannedStudent && status === "ongoing") scanCard(value.trim());
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  scanCard();
-                }
-              }}
-            />
+          <div className="session-register-actions">
+            <div className="table-search">
+              <Search size={15} />
+              <input
+                ref={scanInput}
+                placeholder="Search name or scan RFID…"
+                value={query}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setQuery(value);
+                  const scannedStudent = (rows || []).find(
+                    (row) =>
+                      row.rfid &&
+                      row.rfid.trim().toLowerCase() === value.trim().toLowerCase(),
+                  );
+                  if (scannedStudent && status === "ongoing") scanCard(value.trim());
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    scanCard();
+                  }
+                }}
+              />
+            </div>
+            <Button kind="secondary" icon={Download} onClick={exportAttendance} disabled={!rows}>
+              Export PDF
+            </Button>
           </div>
         </div>
         <div className="session-attendance-layout">
@@ -4740,12 +4996,22 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
                     key={row.stid}
                     onClick={() => setSelectedStudentId(row.stid)}
                   >
-                    <Avatar name={row.name} />
+                    <StudentAvatar stid={row.stid} name={row.name} version={version} />
                     <div className="session-student-name">
                       <b>{row.name}</b>
                       <span>{row.rfid ? `Card ${row.rfid}` : "No card assigned"}</span>
                     </div>
-                    <Status value={row.status} />
+                    <div className="session-student-attendance">
+                      <Status value={row.status} />
+                      {row.status === "present" && row.present_at && (
+                        <span className={`session-student-arrival${Number(row.late_minutes) > 0 ? " late" : ""}`}>
+                          {prettyTimestamp(row.present_at)}
+                          {classStartedAt && (Number(row.late_minutes) > 0
+                            ? ` · ${row.late_minutes} min late`
+                            : " · On time")}
+                        </span>
+                      )}
+                    </div>
                   </button>
                 )) : <div className="session-no-roster">No students match this name or RFID.</div>}
               </div>
@@ -4767,11 +5033,24 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
             {selectedStudent ? (
               <>
                 <div className="session-detail-person">
-                  <Avatar name={selectedStudent.name} />
+                  <StudentAvatar
+                    stid={selectedStudent.stid}
+                    name={selectedStudent.name}
+                    version={version}
+                    className="session-detail-photo"
+                  />
                   <div>
                     <span>Selected student</span>
                     <h3>{selectedStudent.name}</h3>
                     <Status value={selectedStudent.status} />
+                    {selectedStudent.status === "present" && selectedStudent.present_at && (
+                      <span className={`session-student-arrival${Number(selectedStudent.late_minutes) > 0 ? " late" : ""}`}>
+                        Arrived at {prettyTimestamp(selectedStudent.present_at)}
+                        {classStartedAt && (Number(selectedStudent.late_minutes) > 0
+                          ? ` · ${selectedStudent.late_minutes} minute${Number(selectedStudent.late_minutes) === 1 ? "" : "s"} late`
+                          : " · On time")}
+                      </span>
+                    )}
                   </div>
                 </div>
                 {Number(selectedStudent.overdue_month_count) > 0 && (
@@ -4887,16 +5166,6 @@ function SessionModal({ session, close, refresh, notify, setModal }) {
             )}
           </aside>
         </div>
-        {status === "ongoing" && (
-          <div className="session-modal-footer">
-            <span>
-              Unmarked students are set to absent when you end the session.
-            </span>
-            <Button kind="secondary" onClick={end} disabled={busy}>
-              End session <CheckCheck size={15} />
-            </Button>
-          </div>
-        )}
       </div>
     </>
   );

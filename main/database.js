@@ -15,6 +15,10 @@ function openDatabase(filePath) {
   if (!organizationColumns.has('payment_due_day')) {
     db.exec('ALTER TABLE organizations ADD COLUMN payment_due_day INTEGER CHECK (payment_due_day BETWEEN 1 AND 31)');
   }
+  const studentColumns = new Set(db.pragma('table_info(students)').map(column => column.name));
+  if (!studentColumns.has('photo_data')) {
+    db.exec('ALTER TABLE students ADD COLUMN photo_data TEXT');
+  }
   const legacyDueDates = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='payment_due_dates'").get();
   if (legacyDueDates) {
     db.exec(`UPDATE organizations
@@ -34,6 +38,16 @@ function openDatabase(filePath) {
   }
   if (!sessionColumns.has('is_special')) {
     db.exec('ALTER TABLE sessions ADD COLUMN is_special INTEGER NOT NULL DEFAULT 0 CHECK (is_special IN (0,1))');
+  }
+  for (const column of ['register_opened_at', 'class_started_at', 'ended_at']) {
+    if (!sessionColumns.has(column)) db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+  }
+  if (!sessionColumns.has('ended_automatically')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN ended_automatically INTEGER NOT NULL DEFAULT 0 CHECK (ended_automatically IN (0,1))');
+  }
+  const attendanceColumns = new Set(db.pragma('table_info(attendance)').map(column => column.name));
+  if (!attendanceColumns.has('present_at')) {
+    db.exec('ALTER TABLE attendance ADD COLUMN present_at TEXT');
   }
   return db;
 }

@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('tuition', Object.freeze({
   dashboard: { get: invoke('dashboard:get') },
   students: {
     list: invoke('students:list'), save: invoke('students:save'), delete: invoke('students:delete'),
+    photo: invoke('students:photo'), choosePhoto: invoke('students:choosePhoto'),
     assignRfid: invoke('students:assignRfid'), removeRfid: invoke('students:removeRfid'), byRfid: invoke('students:byRfid'),
     fees: invoke('students:fees'), payFees: invoke('students:payFees'),
     importExcel: () => ipcRenderer.invoke('records:import', 'students'),
@@ -29,16 +30,21 @@ contextBridge.exposeInMainWorld('tuition', Object.freeze({
   sessions: {
     list: invoke('sessions:list'), generate: invoke('sessions:generate'), attendance: invoke('sessions:attendance'),
     scheduleSpecial: invoke('sessions:scheduleSpecial'),
-    start: invoke('sessions:start'), mark: invoke('sessions:mark'), end: invoke('sessions:end')
+    exportAttendancePDF: invoke('sessions:exportAttendancePDF'),
+    start: invoke('sessions:start'), classStarted: invoke('sessions:classStarted'),
+    mark: invoke('sessions:mark'), end: invoke('sessions:end')
   },
   payments: { overview: invoke('payments:overview'), pay: invoke('payments:pay') },
   reports: {
     classEarnings: invoke('reports:classEarnings'),
+    exportClassPaymentPDF: invoke('reports:exportClassPaymentPDF'),
     teacherBalances: invoke('reports:teacherBalances'),
     paymentRecords: invoke('reports:paymentRecords'),
     studentAttendance: invoke('reports:studentAttendance'),
+    sessions: invoke('reports:sessions'),
     pendingPayments: invoke('reports:pendingPayments'),
-    exportPDF: invoke('reports:exportPDF')
+    exportPDF: invoke('reports:exportPDF'),
+    exportDailySummaryPDF: invoke('reports:exportDailySummaryPDF')
   },
   payouts: { list: invoke('payouts:list'), add: invoke('payouts:add') },
   settings: { organization: invoke('settings:organization'), saveOrganization: invoke('settings:saveOrganization') },

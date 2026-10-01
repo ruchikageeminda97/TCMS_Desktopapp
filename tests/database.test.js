@@ -6,7 +6,11 @@ const test = require('node:test');
 const Database = require('better-sqlite3');
 const { overlaps, slotIsAvailable, validateSlots } = require('../main/scheduling');
 const { dueDateForMonth, overduePaymentMonths } = require('../main/payment-due');
+const { buildAttendanceReportHtml } = require('../main/attendance-report');
+const { buildDailySummaryReportHtml } = require('../main/daily-summary-report');
+const { buildClassPaymentReportHtml } = require('../main/class-payment-report');
 const { openDatabase } = require('../main/database');
+const { completeOngoingSession, endExpiredSessions } = require('../main/session-lifecycle');
 
 function createDatabase() {
   const db = new Database(':memory:');
@@ -32,15 +36,23 @@ test('schema creates the full tenant-scoped tuition management data model', () =
     }
     const organizationColumns = new Set(db.pragma('table_info(organizations)').map(column => column.name));
     assert.ok(organizationColumns.has('payment_due_day'));
+    const studentColumns = new Set(db.pragma('table_info(students)').map(column => column.name));
+    assert.ok(studentColumns.has('photo_data'));
     const sessionColumns = new Set(db.pragma('table_info(sessions)').map(column => column.name));
     assert.ok(sessionColumns.has('hall_id'));
     assert.ok(sessionColumns.has('is_special'));
+    assert.ok(sessionColumns.has('register_opened_at'));
+    assert.ok(sessionColumns.has('class_started_at'));
+    assert.ok(sessionColumns.has('ended_at'));
+    assert.ok(sessionColumns.has('ended_automatically'));
+    const attendanceColumns = new Set(db.pragma('table_info(attendance)').map(column => column.name));
+    assert.ok(attendanceColumns.has('present_at'));
   } finally {
     db.close();
   }
 });
 
-test('opening an existing database migrates sessions for special-session fields', () => {
+test('opening an existing database migrates session timing and attendance punch fields', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tcms-schema-migration-'));
   const filePath = path.join(directory, 'legacy.db');
   const legacy = new Database(filePath);
@@ -60,6 +72,18 @@ test('opening an existing database migrates sessions for special-session fields'
     contact TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE students (
+    stid INTEGER PRIMARY KEY AUTOINCREMENT,
+    oid INTEGER NOT NULL,
+    name TEXT NOT NULL
+  );
+  CREATE TABLE attendance (
+    attendance_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    stid INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'not_marked',
+    marked_at TEXT
+  );
   CREATE TABLE payment_due_dates (
     due_date_id INTEGER PRIMARY KEY AUTOINCREMENT,
     oid INTEGER NOT NULL REFERENCES organizations(oid),
@@ -77,7 +101,13 @@ test('opening an existing database migrates sessions for special-session fields'
       const columns = new Set(upgraded.pragma('table_info(sessions)').map(column => column.name));
       assert.ok(columns.has('hall_id'));
       assert.ok(columns.has('is_special'));
+      assert.ok(columns.has('register_opened_at'));
+      assert.ok(columns.has('class_started_at'));
+      assert.ok(columns.has('ended_at'));
+      assert.ok(columns.has('ended_automatically'));
       assert.equal(upgraded.prepare('SELECT payment_due_day FROM organizations WHERE oid=1').get().payment_due_day, 15);
+      assert.ok(new Set(upgraded.pragma('table_info(students)').map(column => column.name)).has('photo_data'));
+      assert.ok(new Set(upgraded.pragma('table_info(attendance)').map(column => column.name)).has('present_at'));
     } finally {
       upgraded.close();
     }
@@ -169,6 +199,203 @@ test('sessions generate attendance rows and preserve absent/present register sta
   } finally {
     db.close();
   }
+});
+
+test('expired ongoing sessions are completed and unmarked attendance becomes absent', () => {
+  const db = createDatabase();
+  try {
+    const { classId, student } = seed(db);
+    const expiredSession = db.prepare(`INSERT INTO sessions (class_id,session_date,status)
+      VALUES (?,?,'ongoing')`).run(classId, '2026-09-30').lastInsertRowid;
+    const todaySession = db.prepare(`INSERT INTO sessions (class_id,session_date,status)
+      VALUES (?,?,'ongoing')`).run(classId, '2026-10-01').lastInsertRowid;
+    const alreadyEndedSession = db.prepare(`INSERT INTO sessions (class_id,session_date,status)
+      VALUES (?,?,'completed')`).run(classId, '2026-09-29').lastInsertRowid;
+    const addAttendance = db.prepare('INSERT INTO attendance (session_id,stid,status) VALUES (?,?,?)');
+    addAttendance.run(expiredSession, student, 'not_marked');
+    addAttendance.run(todaySession, student, 'not_marked');
+    addAttendance.run(alreadyEndedSession, student, 'not_marked');
+
+    assert.equal(endExpiredSessions(db, '2026-10-01'), 1);
+    assert.deepEqual(db.prepare('SELECT status,ended_automatically FROM sessions WHERE session_id=?').get(expiredSession), {
+      status: 'completed',
+      ended_automatically: 1
+    });
+    assert.equal(db.prepare('SELECT status FROM attendance WHERE session_id=?').get(expiredSession).status, 'absent');
+    assert.equal(db.prepare('SELECT status FROM sessions WHERE session_id=?').get(todaySession).status, 'ongoing');
+    assert.equal(db.prepare('SELECT status FROM attendance WHERE session_id=?').get(todaySession).status, 'not_marked');
+    assert.equal(db.prepare('SELECT status FROM attendance WHERE session_id=?').get(alreadyEndedSession).status, 'not_marked');
+    assert.equal(completeOngoingSession(db, todaySession), true);
+    assert.equal(db.prepare('SELECT ended_automatically FROM sessions WHERE session_id=?').get(todaySession).ended_automatically, 0);
+    assert.equal(db.prepare('SELECT status FROM attendance WHERE session_id=?').get(todaySession).status, 'absent');
+  } finally {
+    db.close();
+  }
+});
+
+test('session report filters by date range and teacher with present and enrollment counts', () => {
+  const db = createDatabase();
+  try {
+    const first = seed(db);
+    const otherTeacher = db.prepare('INSERT INTO teachers (oid,name) VALUES (?,?)')
+      .run(first.organization, 'Taylor Teacher').lastInsertRowid;
+    const otherClass = db.prepare(`INSERT INTO classes
+      (oid,class_name,tid,fee,teacher_commission_percentage) VALUES (?,?,?,?,?)`)
+      .run(first.organization, 'Science', otherTeacher, 1000, 80).lastInsertRowid;
+    const secondStudent = db.prepare('INSERT INTO students (oid,name,contact1) VALUES (?,?,?)')
+      .run(first.organization, 'Morgan Student', '555-0102').lastInsertRowid;
+    db.prepare('INSERT INTO class_enrollments (class_id,stid) VALUES (?,?)').run(first.classId, secondStudent);
+    db.prepare('INSERT INTO class_enrollments (class_id,stid) VALUES (?,?)').run(otherClass, secondStudent);
+    const firstSession = db.prepare(`INSERT INTO sessions (class_id,session_date,start_time,end_time,status)
+      VALUES (?,?,'09:00','10:00','completed')`).run(first.classId, '2026-09-30').lastInsertRowid;
+    const secondSession = db.prepare(`INSERT INTO sessions (class_id,session_date,start_time,end_time,status)
+      VALUES (?,?,'11:00','12:00','completed')`).run(otherClass, '2026-10-01').lastInsertRowid;
+    db.prepare("INSERT INTO attendance (session_id,stid,status) VALUES (?,?,'present')").run(firstSession, first.student);
+    db.prepare("INSERT INTO attendance (session_id,stid,status) VALUES (?,?,'present')").run(secondSession, secondStudent);
+    const queryReport = (teacherId) => db.prepare(`SELECT se.session_id,se.session_date,c.class_name,t.tid,t.name AS teacher_name,
+        (SELECT COUNT(*) FROM class_enrollments e WHERE e.class_id=c.class_id AND e.status='active'
+          AND substr(e.enrolled_date,1,10)<=se.session_date) AS enrolled_count,
+        (SELECT COUNT(*) FROM attendance a WHERE a.session_id=se.session_id AND a.status='present') AS present_count
+      FROM sessions se JOIN classes c ON c.class_id=se.class_id JOIN teachers t ON t.tid=c.tid
+      WHERE c.oid=? AND se.session_date BETWEEN ? AND ? AND se.status!='cancelled'
+      ${teacherId ? 'AND t.tid=?' : ''} ORDER BY se.session_date DESC,se.start_time`)
+      .all(...(teacherId
+        ? [first.organization, '2026-09-30', '2026-10-01', teacherId]
+        : [first.organization, '2026-09-30', '2026-10-01']));
+    const allSessions = queryReport();
+    assert.equal(allSessions.length, 2);
+    const laterSession = allSessions.find((row) => row.session_id === secondSession);
+    assert.equal(laterSession.present_count, 1);
+    assert.equal(laterSession.enrolled_count, 1);
+    const teacherSessions = queryReport(first.teacher);
+    assert.equal(teacherSessions.length, 1);
+    assert.equal(teacherSessions[0].session_id, firstSession);
+  } finally {
+    db.close();
+  }
+});
+
+test('attendance records student punch time and computes lateness from class start', () => {
+  const db = createDatabase();
+  try {
+    const { classId, student } = seed(db);
+    const sessionId = db.prepare(`INSERT INTO sessions (class_id,session_date,status,class_started_at)
+      VALUES (?,?,'ongoing',?)`).run(classId, '2026-09-26', '2026-09-26 09:00:00').lastInsertRowid;
+    db.prepare(`INSERT INTO attendance (session_id,stid,status,present_at)
+      VALUES (?,?,'present',?)`).run(sessionId, student, '2026-09-26 09:13:30');
+    const arrival = db.prepare(`SELECT present_at,
+      MAX(0,CAST((julianday(a.present_at)-julianday(s.class_started_at))*1440 AS INTEGER)) AS late_minutes
+      FROM attendance a JOIN sessions s ON s.session_id=a.session_id WHERE a.session_id=? AND a.stid=?`)
+      .get(sessionId, student);
+    assert.equal(arrival.present_at, '2026-09-26 09:13:30');
+    assert.equal(arrival.late_minutes, 13);
+  } finally {
+    db.close();
+  }
+});
+
+test('attendance PDF report includes session details, roster counts and escaped attendance lists', () => {
+  const html = buildAttendanceReportHtml({
+    organization: 'Bright & Best <Academy>',
+    session: {
+      class_name: 'Grade 6 Maths',
+      teacher_name: 'Alex Teacher',
+      session_date: '2026-09-15',
+      start_time: '17:00',
+      end_time: '19:00',
+      register_opened_at: '2026-09-15 11:50:00',
+      class_started_at: '2026-09-15 12:00:00',
+      ended_at: '2026-09-15 13:00:00'
+    },
+    students: [
+      { name: 'Jamie Present', status: 'present', present_at: '2026-09-15 12:12:00', late_minutes: 12 },
+      { name: 'Taylor Absent', status: 'absent', marked_at: '2026-09-15 13:00:00' },
+      { name: '<Unmarked Student>', status: 'not_marked' }
+    ],
+    generatedOn: '2026-09-30'
+  });
+  assert.match(html, /Bright &amp; Best &lt;Academy&gt;/);
+  assert.match(html, /Grade 6 Maths/);
+  assert.match(html, /Alex Teacher/);
+  assert.match(html, /Enrolled students<\/span><\/div>/);
+  assert.match(html, /<b>3<\/b>/);
+  assert.match(html, /Present \(1\)/);
+  assert.match(html, /Jamie Present/);
+  assert.match(html, /Absent \(1\)/);
+  assert.match(html, /Taylor Absent/);
+  assert.match(html, /12 minutes late/);
+  assert.match(html, /li\.late-arrival,li\.late-arrival small\{color:#b42318!important/);
+  assert.match(html, /<li class="late-arrival">Jamie Present<small>Arrived .* · 12 minutes late<\/small><\/li>/);
+  assert.match(html, /Arrived late/);
+  assert.match(html, /Register opened/);
+  assert.match(html, /Class started/);
+  assert.match(html, /Session ended/);
+  assert.match(html, /Marked absent/);
+  assert.match(html, /&lt;Unmarked Student&gt;/);
+  assert.match(html, /Not marked \(1\)/);
+});
+
+test('daily summary PDF includes financial, student and session totals with colored report styling', () => {
+  const html = buildDailySummaryReportHtml({
+    organization: 'Bright & Best <Academy>',
+    date: '2026-09-30',
+    activeStudentCount: 24,
+    totalReceived: 12500,
+    totalTeacherPayouts: 4500,
+    classPayments: [
+      { class_name: 'Grade 6 Maths', teacher_name: 'Alex Teacher', student_count: 5, amount_received: 7500 }
+    ],
+    teacherPayouts: [{ teacher_name: 'Alex Teacher', amount: 4500 }],
+    sessions: [{
+      class_name: 'Grade 6 Maths',
+      teacher_name: 'Alex Teacher',
+      start_time: '17:00',
+      end_time: '19:00',
+      enrolled_count: 8,
+      present_count: 6,
+      absent_count: 1,
+      not_marked_count: 1,
+      status: 'ongoing'
+    }],
+    generatedOn: '2026-09-30'
+  });
+  assert.match(html, /Bright &amp; Best &lt;Academy&gt;/);
+  assert.match(html, /Daily Summary Report/);
+  assert.match(html, /12,500\.00/);
+  assert.match(html, /4,500\.00/);
+  assert.match(html, /Students enrolled in sessions/);
+  assert.match(html, /Present \/ absent/);
+  assert.match(html, /Grade 6 Maths/);
+  assert.match(html, /Alex Teacher/);
+  assert.match(html, /Class payments received/);
+  assert.match(html, /Teacher payouts/);
+  assert.match(html, /Sessions and attendance/);
+  assert.match(html, /print-color-adjust:exact/);
+});
+
+test('class payment PDF has class and teacher headers, 12 month columns, and ruled student rows', () => {
+  const html = buildClassPaymentReportHtml({
+    organization: 'Bright & Best <Academy>',
+    year: '2026',
+    classes: [{
+      class_name: 'Grade 6 Maths',
+      teacher_name: 'Alex Teacher',
+      students: [{ name: 'Jamie Student' }, { name: 'Taylor Student' }]
+    }],
+    generatedOn: '2026-10-01'
+  });
+  assert.match(html, /A4 portrait/);
+  assert.match(html, /height:7mm/);
+  assert.match(html, /Class:<\/b> Grade 6 Maths/);
+  assert.match(html, /Teacher:<\/b> Alex Teacher/);
+  assert.match(html, /Student name/);
+  for (const month of ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']) {
+    assert.match(html, new RegExp(`<th>${month}<\\/th>`));
+  }
+  assert.match(html, /<tr><th scope="row">Jamie Student<\/th><td><\/td>/);
+  assert.match(html, /<tr><th scope="row">Taylor Student<\/th><td><\/td>/);
+  assert.match(html, /border:1px solid #697386/);
+  assert.match(html, /Bright &amp; Best &lt;Academy&gt;/);
 });
 
 test('monthly due day repeats, clamps to month end, and warns only after it passes unpaid', () => {
