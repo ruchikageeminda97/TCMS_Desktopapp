@@ -406,6 +406,12 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
 .attendance-mark.mark-present{border-color:#d9eddf;background:#eff8f1;color:#438b61}
 .payment-quick{min-width:56px;color:#7560ca}
 .payment-quick.payment-done{border-color:#d9eddf;background:#eff8f1;color:#438b61}
+.free-access-label{display:inline-flex;align-items:center;width:max-content;padding:4px 8px;border-radius:6px;background:#e8f5e9;color:#287a42;font-size:11px;font-weight:750;white-space:nowrap}
+.low-attendance-label{display:inline-flex;align-items:center;width:max-content;padding:4px 7px;border-radius:6px;background:#fff5cf;color:#8a6500;font-size:10px;font-weight:700;white-space:nowrap}
+.low-attendance-notice{display:flex;flex-direction:column;gap:4px;margin-top:9px;padding:9px 11px;border:1px solid #f0d98e;border-radius:8px;background:#fff8df;color:#765500}
+.low-attendance-notice b{font-size:12px}
+.low-attendance-notice span{font-size:11px;line-height:1.4}
+.birthday-attendance-notice{margin-top:8px;padding:8px 10px;border:1px solid #ccebd5;border-radius:7px;background:red;color:white;font-size:15px;font-weight:700}
 .session-no-roster{padding:22px 10px;display:flex;align-items:center;justify-content:center;gap:8px;color:#959aa6;font-size:13px}
 .session-modal-footer{display:flex;justify-content:space-between;align-items:center;gap:9px;border-top:1px solid #eff0f2;margin-top:9px;padding-top:12px}
 .session-modal-footer>span{font-size:12px;color:#999eaa}
@@ -468,6 +474,53 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
 @media(max-width:760px){.session-attendance-layout{grid-template-columns:1fr}.session-student-detail{min-height:260px}.payment-student-select{min-width:100%;max-width:none}.session-modal-content{padding:14px}.session-roster-top{flex-wrap:wrap}.session-roster-top .table-search{max-width:none;min-width:100%}.session-register-actions{width:100%;flex-wrap:wrap}.session-register-actions .table-search{min-width:100%}}
 .print-report{display:none}
 
+.session-modal-title{align-items:center}
+.session-modal-window{height:min(92vh,900px);max-height:92vh;display:flex;flex-direction:column;overflow:hidden}
+.session-modal-window>.session-modal-title{flex:none}
+.session-modal-window>.session-modal-content{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+.session-modal-title>div:first-of-type{min-width:0}
+.session-header-actions{display:flex;align-items:center;gap:8px}
+.session-header-actions .button{white-space:nowrap}
+.session-started-time{font-size:12px!important;color:#438b61!important;white-space:nowrap}
+.session-roster-top{flex:none}
+.session-attendance-layout{grid-template-columns:minmax(0,3fr) minmax(0,7fr);flex:1;min-height:0}
+.session-roster-column{display:flex;flex-direction:column;min-height:0}
+.session-roster{flex:1;min-height:0;max-height:none;overflow-y:auto}
+.session-roster-column>.pagination{flex:none}
+.session-student-detail{min-height:0;overflow-y:auto}
+.session-student{gap:7px;padding:9px}
+.session-student-name{min-width:0}
+.session-student-name span{white-space:normal;overflow-wrap:anywhere}
+.session-student-attendance{align-items:flex-end}
+.session-detail-person{align-items:flex-start;gap:16px}
+.session-detail-person>.avatar{width:132px;height:132px;flex:none}
+.session-detail-identity{display:flex;flex-wrap:wrap;gap:5px 12px}
+.session-detail-identity>span{font-size:12px;color:#777f8e}
+.session-detail-identity>span:first-child{font-weight:650;color:#515868}
+.session-detail-fields{padding:12px 0}
+.session-student-detail-present{background:#eafbea}
+@media(max-width:760px){
+  .session-modal-window{height:92vh}
+  .session-modal-window>.session-modal-content{overflow-y:auto}
+  .session-modal-title{align-items:flex-start;flex-wrap:wrap}
+  .session-modal-title>div:first-of-type{flex:1}
+  .session-modal-title .session-header-actions{order:3;width:100%;justify-content:flex-end}
+  .session-attendance-layout{grid-template-columns:1fr;flex:none}
+  .session-roster{flex:none;max-height:300px}
+  .session-roster-column{min-height:0}
+  .session-student-detail{overflow:visible}
+  .session-register-actions{width:100%;flex-wrap:nowrap}
+  .session-register-actions .table-search{min-width:0}
+  .session-started-time{white-space:normal}
+}
+@media(max-width:520px){
+  .session-register-actions{flex-wrap:wrap}
+  .session-register-actions .table-search{flex-basis:100%}
+  .session-detail-person>.avatar{width:96px;height:96px}
+  .session-detail-person{gap:11px}
+  .session-modal-title .session-header-actions{flex-wrap:wrap}
+}
+
 /* Higher-contrast controls and roomier navigation for everyday use. */
 :root{--muted:#626b7a;--line:#dfe3e9}
 .sidebar{width:284px;padding-left:18px;padding-right:18px}
@@ -529,6 +582,8 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
 .teacher-balance-badge{display:inline-block;padding:5px 9px;border-radius:5px;color:#fff}
 .teacher-balance-pending{background:#c62828}
 .teacher-balance-settled{background:#2e7d32}
+.teacher-paid-month{display:inline-block;padding:5px 9px;border-radius:5px;background:#e8f5e9;color:#2e7d32}
+.teacher-payment-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .report-heading>.search-select{width:min(280px,40%)}
 .pending-amount{font-weight:750}
 @media(max-width:760px){

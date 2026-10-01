@@ -80,6 +80,25 @@ const ageFromBirthday = (birthday) => {
       : 0)
   );
 };
+const ageOnDate = (birthday, date) => {
+  if (!birthday || !date) return null;
+  const birth = new Date(`${birthday}T00:00:00`);
+  const onDate = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(birth.getTime()) || Number.isNaN(onDate.getTime()) || birth > onDate) return null;
+  return onDate.getFullYear() - birth.getFullYear()
+    - (onDate.getMonth() < birth.getMonth()
+      || (onDate.getMonth() === birth.getMonth() && onDate.getDate() < birth.getDate()) ? 1 : 0);
+};
+const birthdayMessage = (student, date) => {
+  if (!student.birthday || !date || student.birthday.slice(5) !== date.slice(5)) return null;
+  const age = ageOnDate(student.birthday, date);
+  if (age === null) return null;
+  const ordinal = age % 100 >= 11 && age % 100 <= 13 ? "th"
+    : age % 10 === 1 ? "st"
+      : age % 10 === 2 ? "nd"
+        : age % 10 === 3 ? "rd" : "th";
+  return `Today is ${age}${ordinal} Birthday of ${student.name} !!!`;
+};
 const money = (amount) =>
   new Intl.NumberFormat(undefined, {
     minimumFractionDigits: 2,
@@ -1951,10 +1970,11 @@ function PaymentsPage({ version, setModal, notify }) {
     setSelected([]);
     setPage(1);
   }, [month, data, studentFilter]);
-  const unpaid = visibleRows.filter((row) => !row.payment_id);
+  const unpaid = visibleRows.filter((row) => !row.payment_id && Number(row.discount_percentage) < 100 && Number(row.due_amount) > 0);
   const pay = async (ids) => {
     if (!ids.length) return;
-    const reviewRows = rows.filter((row) => ids.includes(row.enrollment_id) && !row.payment_id);
+    const reviewRows = rows.filter((row) => ids.includes(row.enrollment_id) && !row.payment_id
+      && Number(row.discount_percentage) < 100 && Number(row.due_amount) > 0);
     if (reviewRows.length) setModal({ type: "payment-review", rows: reviewRows, month });
   };
   const exportHistory = async () => {
@@ -2102,7 +2122,7 @@ function PaymentsPage({ version, setModal, notify }) {
                       <input
                         type="checkbox"
                         aria-label={`Select ${row.name} ${row.class_name}`}
-                        disabled={Boolean(row.payment_id)}
+                        disabled={Boolean(row.payment_id) || Number(row.discount_percentage) >= 100 || Number(row.due_amount) <= 0}
                         checked={selected.includes(row.enrollment_id)}
                         onChange={(event) =>
                           setSelected((ids) =>
@@ -2138,14 +2158,18 @@ function PaymentsPage({ version, setModal, notify }) {
                       </b>
                     </td>
                     <td>
-                      {row.payment_id ? (
+                      {Number(row.discount_percentage) >= 100 ? (
+                        <span className="sub-cell">No fee due</span>
+                      ) : row.payment_id ? (
                         <Status value="paid" />
                       ) : (
                         <Status value="pending" />
                       )}
                     </td>
                     <td>
-                      {!row.payment_id && (
+                      {Number(row.discount_percentage) >= 100 ? (
+                        <span className="free-access-label">Free Access</span>
+                      ) : !row.payment_id && (
                         <button
                           className="small-action"
                           onClick={() => pay([row.enrollment_id])}
@@ -2286,6 +2310,14 @@ function TeacherPaymentsPanel({ version, setModal, notify }) {
   const filteredBalances = (balances.data || [])
     .filter((row) => !teacherId || row.tid === Number(teacherId))
     .sort((a, b) => Number(b.outstanding) - Number(a.outstanding));
+  const paidThisMonth = (balances.data || []).reduce(
+    (sum, row) => sum + Number(row.paid_out_this_month || 0),
+    0,
+  );
+  const pendingTotal = (balances.data || []).reduce(
+    (sum, row) => sum + Math.max(0, Number(row.outstanding || 0)),
+    0,
+  );
   return (
     <section className="panel data-panel teacher-payment-panel">
       <div className="report-heading">
@@ -2359,6 +2391,20 @@ function TeacherPaymentsPanel({ version, setModal, notify }) {
         </>
       ) : (
         <>
+          <div className="payment-summary-grid teacher-payment-summary-grid">
+            <div className="payment-summary panel">
+              <div className="payment-summary-icon paid-icon"><CheckCheck size={18} /></div>
+              <span>Teacher payments this month</span>
+              <b>{balances.data ? money(paidThisMonth) : "—"}</b>
+              <small>Payouts recorded in {thisMonth()}</small>
+            </div>
+            <div className="payment-summary panel">
+              <div className="payment-summary-icon due-icon"><Clock3 size={18} /></div>
+              <span>Pending teacher payments</span>
+              <b>{balances.data ? money(pendingTotal) : "—"}</b>
+              <small>Total outstanding balance for all teachers</small>
+            </div>
+          </div>
           <div className="history-filter-row">
             <label>Teacher
               <SearchableSelect
@@ -2373,16 +2419,16 @@ function TeacherPaymentsPanel({ version, setModal, notify }) {
               />
             </label>
           </div>
-          <div className="report-heading compact-report-heading"><div><h2>Teacher balances</h2><p>Pending amounts are ordered highest to lowest. Total commission earned minus payouts made to date.</p></div></div>
+          <div className="report-heading compact-report-heading"><div><h2>Teacher balances</h2><p>Paid out shows this month; pending balance is total earned minus all payouts to date.</p></div></div>
           {balances.error && <div className="error-inline">{balances.error}</div>}
           {filteredBalances.length ? (
             <>
               <div className="table-wrap"><table>
-                <thead><tr><th>TEACHER</th><th>EARNED TO DATE</th><th>PAID OUT</th><th>PENDING BALANCE</th></tr></thead>
+                <thead><tr><th>TEACHER</th><th>EARNED TO DATE</th><th>PAID THIS MONTH</th><th>PENDING BALANCE</th></tr></thead>
                 <tbody>{pageSlice(filteredBalances, balancePage).map((row) => {
                   const outstanding = Number(row.outstanding);
                   return (
-                    <tr key={row.tid}><td><b>{row.name}</b></td><td>{money(row.earned)}</td><td>{money(row.paid_out)}</td><td><b className={`teacher-balance-badge ${outstanding > 0 ? "teacher-balance-pending" : "teacher-balance-settled"}`}>{money(outstanding)}</b></td></tr>
+                    <tr key={row.tid}><td><b>{row.name}</b></td><td>{money(row.earned)}</td><td><b className="teacher-paid-month">{money(row.paid_out_this_month)}</b></td><td><b className={`teacher-balance-badge ${outstanding > 0 ? "teacher-balance-pending" : "teacher-balance-settled"}`}>{money(outstanding)}</b></td></tr>
                   );
                 })}</tbody>
               </table></div>
@@ -3106,7 +3152,7 @@ function ModalHost({
       }}
     >
       <div
-        className={`modal-window ${["session", "class-detail", "class-form", "enrollment-form"].includes(modal.type) ? "modal-window-wide" : ""}`}
+        className={`modal-window ${modal.type === "session" ? "session-modal-window" : ""} ${["session", "class-detail", "class-form", "enrollment-form"].includes(modal.type) ? "modal-window-wide" : ""}`}
         role="dialog"
         aria-modal="true"
       >
@@ -3115,9 +3161,9 @@ function ModalHost({
     </div>
   );
 }
-function ModalTitle({ eyebrow, title, description, close, back }) {
+function ModalTitle({ eyebrow, title, description, close, back, action, className = "" }) {
   return (
-    <div className="modal-title">
+    <div className={`modal-title ${className}`}>
       {back && (
         <button
           className="icon-button modal-back"
@@ -3132,6 +3178,7 @@ function ModalTitle({ eyebrow, title, description, close, back }) {
         <h2>{title}</h2>
         {description && <p>{description}</p>}
       </div>
+      {action}
       <button
         className="icon-button modal-close"
         onClick={close}
@@ -4354,6 +4401,7 @@ function StudentDetail({
           amount:
             Number(enrollment.fee) *
             (1 - Number(enrollment.discount_percentage) / 100),
+          freeAccess: Number(enrollment.discount_percentage) >= 100,
         }),
       ),
     )
@@ -4362,7 +4410,7 @@ function StudentDetail({
         b.month.localeCompare(a.month) ||
         a.class_name.localeCompare(b.class_name),
     );
-  const unpaidFees = feeRows.filter((row) => !row.paid);
+  const unpaidFees = feeRows.filter((row) => !row.paid && !row.freeAccess && row.amount > 0);
   const filteredFeeRows = feeRows.filter((row) =>
     `${row.class_name} ${row.month}`.toLowerCase().includes(feeQuery.toLowerCase()),
   );
@@ -4413,7 +4461,7 @@ function StudentDetail({
   const paySelected = () => {
     const selectedRows = feeRows.filter((row) =>
       selectedFees.includes(`${row.enrollment_id}:${row.month}`),
-    );
+    ).filter((row) => !row.freeAccess && row.amount > 0);
     if (selectedRows.length) {
       setModal({
         type: "student-fee-review",
@@ -4550,7 +4598,7 @@ function StudentDetail({
                   className={`student-fee-row ${row.paid ? "fee-paid" : ""}`}
                   key={key}
                 >
-                  {!row.paid && (
+                  {!row.paid && !row.freeAccess && (
                     <input
                       type="checkbox"
                       aria-label={`Select ${row.class_name}, ${monthLabel(row.month)}`}
@@ -4569,7 +4617,9 @@ function StudentDetail({
                     <small>{monthLabel(row.month)}</small>
                   </span>
                   <b>
-                    {row.paid ? (
+                    {row.freeAccess ? (
+                      <span className="free-access-label">Free Access</span>
+                    ) : row.paid ? (
                       <Status value="paid" />
                     ) : (
                       <span>{money(row.amount)}</span>
@@ -4777,6 +4827,12 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
       return false;
     }
   };
+  const markAttendance = async (row, next) => {
+    const marked = await mark(row, next);
+    if (marked && next === "present") {
+      notify(birthdayMessage(row, session.session_date) || `${row.name} marked present.`);
+    }
+  };
   const classStarted = async () => {
     setBusy(true);
     try {
@@ -4812,8 +4868,8 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
         );
         return;
       }
-      if (attendee.status !== "present" && (await mark(attendee, "present"))) {
-        notify(`${student.name} marked present.`);
+      if (attendee.status !== "present") {
+        await markAttendance(attendee, "present");
       } else if (attendee.status === "present") {
         notify(`${student.name} is already marked present.`);
       }
@@ -4887,50 +4943,22 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
         eyebrow={prettyDate(session.session_date)}
         title={session.class_name}
         description={`${session.subject || "Class session"}${session.start_time ? ` · ${session.start_time}` : ""}${session.end_time ? `–${session.end_time}` : ""}`}
-        close={close}
-      />
-      <div className="session-modal-content">
-        {status === "scheduled" && (
-          <div className="session-start-banner">
-            <div className="session-start-icon">
-              <CheckCheck size={19} />
-            </div>
-            <div>
-              <b>Ready for roll call</b>
-              <span>
-                Starting the session opens the register for active students.
-              </span>
-            </div>
-            <Button onClick={start} disabled={busy}>
-              Start session
-            </Button>
-          </div>
-        )}
-        {status === "ongoing" && (
-          <div className="session-start-banner session-class-start-banner">
-            <div className="session-start-icon">
-              <Clock3 size={18} />
-            </div>
-            <div>
-              <b>{classStartedAt ? `Class started at ${prettyTimestamp(classStartedAt)}` : "Register is open"}</b>
-              <span>
-                {classStartedAt
-                  ? `Register opened at ${prettyTimestamp(registerOpenedAt)}. Student arrival times are recorded.`
-                  : "Record when teaching begins to track late arrivals. Unmarked students become absent when the session ends."}
-              </span>
-            </div>
-            <div className="session-stage-actions">
-              {!classStartedAt && (
-                <Button onClick={classStarted} disabled={busy}>
-                  Class Started
-                </Button>
-              )}
+        action={
+          status === "scheduled" ? (
+            <Button onClick={start} disabled={busy}>Start session</Button>
+          ) : status === "ongoing" ? (
+            <div className="session-header-actions">
+              {!classStartedAt && <Button onClick={classStarted} disabled={busy}>Class Started</Button>}
               <Button kind="secondary" onClick={end} disabled={busy}>
                 End session <CheckCheck size={15} />
               </Button>
             </div>
-          </div>
-        )}
+          ) : null
+        }
+        className="session-modal-title"
+        close={close}
+      />
+      <div className="session-modal-content">
         {status === "completed" && endedAutomatically ? (
           <div className="session-auto-ended-banner" role="status">
             <b>This session was ended automatically.</b>
@@ -4953,6 +4981,7 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
             </span>
           </div>
           <div className="session-register-actions">
+            {classStartedAt && <span className="session-started-time">Class started at {prettyTimestamp(classStartedAt)}</span>}
             <div className="table-search">
               <Search size={15} />
               <input
@@ -5000,6 +5029,8 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
                     <div className="session-student-name">
                       <b>{row.name}</b>
                       <span>{row.rfid ? `Card ${row.rfid}` : "No card assigned"}</span>
+                      {Number(row.discount_percentage) >= 100 && <span className="free-access-label">Free Access student</span>}
+                      {Number(row.recent_absence_count) === 2 && <span className="low-attendance-label">Absent for the last 2 sessions</span>}
                     </div>
                     <div className="session-student-attendance">
                       <Status value={row.status} />
@@ -5029,7 +5060,7 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
               <Pagination count={filtered.length} page={rosterPage} setPage={setRosterPage} />
             )}
           </div>
-          <aside className="session-student-detail">
+          <aside className={`session-student-detail${selectedStudent?.status === "present" ? " session-student-detail-present" : ""}`}>
             {selectedStudent ? (
               <>
                 <div className="session-detail-person">
@@ -5042,7 +5073,23 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
                   <div>
                     <span>Selected student</span>
                     <h3>{selectedStudent.name}</h3>
+                    <div className="session-detail-identity">
+                      <span>{selectedStudent.school || "School not added"}</span>
+                      <span>RFID · {selectedStudent.rfid || "Not assigned"}</span>
+                    </div>
                     <Status value={selectedStudent.status} />
+                    {selectedStudent.status === "present" && birthdayMessage(selectedStudent, session.session_date) && (
+                      <div className="birthday-attendance-notice" role="status">
+                        {birthdayMessage(selectedStudent, session.session_date)}
+                      </div>
+                    )}
+                    {Number(selectedStudent.discount_percentage) >= 100 && <span className="free-access-label">Free Access student</span>}
+                    {Number(selectedStudent.recent_absence_count) === 2 && (
+                      <div className="low-attendance-notice" role="status">
+                        <b>Low attendance</b>
+                        <span>This student was absent for the last 2 sessions.</span>
+                      </div>
+                    )}
                     {selectedStudent.status === "present" && selectedStudent.present_at && (
                       <span className={`session-student-arrival${Number(selectedStudent.late_minutes) > 0 ? " late" : ""}`}>
                         Arrived at {prettyTimestamp(selectedStudent.present_at)}
@@ -5090,53 +5137,23 @@ function SessionModal({ session, version, close, refresh, notify, setModal }) {
                     )}
                   </div>
                 )}
-                <div className="session-detail-fields">
-                  <div>
-                  <span>School</span>
-                  <b>{selectedStudent.school || "Not added"}</b>
-                  </div>
-                  <div>
-                  <span>Primary contact</span>
-                  <b>{selectedStudent.contact1 || "Not added"}</b>
-                  </div>
-                  {selectedStudent.contact2 && (
-                  <div>
-                    <span>Other contact</span>
-                    <b>{selectedStudent.contact2}</b>
-                  </div>
-                  )}
-                  <div>
-                  <span>Birthday</span>
-                  <b>{prettyDate(selectedStudent.birthday)}</b>
-                  </div>
-                  <div>
-                  <span>RFID card</span>
-                  <b>{selectedStudent.rfid || "Not assigned"}</b>
-                  </div>
-                  {selectedStudent.address && (
-                  <div>
-                    <span>Address</span>
-                    <b>{selectedStudent.address}</b>
-                  </div>
-                  )}
-                </div>
                 <div className="session-detail-actions">
                   {status === "ongoing" && (
-                    <Button
-                      onClick={() =>
-                        mark(
-                          selectedStudent,
-                          selectedStudent.status === "present" ? "absent" : "present",
-                        )
-                      }
-                      disabled={busy}
-                    >
+                  <Button
+                    onClick={() => markAttendance(
+                      selectedStudent,
+                      selectedStudent.status === "present" ? "absent" : "present",
+                    )}
+                    disabled={busy}
+                  >
                       <Check size={16} />
                       {selectedStudent.status === "present" ? "Mark absent" : "Mark present"}
                     </Button>
                   )}
                   {status === "ongoing" && selectedStudent.status === "present" && (
-                    (selectedStudent.payment_id || !selectedStudent.overdue_months?.some(({ month }) => month === thisMonth())) && (
+                    Number(selectedStudent.discount_percentage) >= 100 ? (
+                      <span className="free-access-label">Free Access</span>
+                    ) : (selectedStudent.payment_id || !selectedStudent.overdue_months?.some(({ month }) => month === thisMonth())) && (
                     <Button
                       kind={selectedStudent.payment_id ? "secondary" : "alert"}
                       onClick={() => !selectedStudent.payment_id && pay(selectedStudent)}

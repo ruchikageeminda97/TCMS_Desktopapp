@@ -503,7 +503,24 @@ function registerIpc() {
         THEN MAX(0,CAST((julianday(a.present_at)-julianday(se.class_started_at))*1440 AS INTEGER)) END AS late_minutes,
       s.name,s.rfid,s.school,s.contact1,s.contact2,s.birthday,s.address,s.status AS student_status,e.enrollment_id,e.discount_percentage,e.enrolled_date,c.fee,
       p.payment_id,p.amount_paid,
-      (SELECT GROUP_CONCAT(for_month) FROM payments WHERE enrollment_id=e.enrollment_id) AS paid_months
+      (SELECT GROUP_CONCAT(for_month) FROM payments WHERE enrollment_id=e.enrollment_id) AS paid_months,
+      (SELECT COUNT(*) FROM (
+        SELECT previous_attendance.status
+        FROM attendance previous_attendance
+        JOIN sessions previous_session ON previous_session.session_id=previous_attendance.session_id
+        WHERE previous_attendance.stid=a.stid AND previous_session.class_id=se.class_id
+          AND previous_session.status='completed'
+          AND (previous_session.session_date<se.session_date OR
+            (previous_session.session_date=se.session_date AND
+              (COALESCE(previous_session.start_time,'')<COALESCE(se.start_time,'') OR
+                (COALESCE(previous_session.start_time,'')=COALESCE(se.start_time,'')
+                  AND previous_session.session_id<se.session_id))))
+          AND EXISTS (SELECT 1 FROM class_enrollments eligible
+            WHERE eligible.class_id=previous_session.class_id AND eligible.stid=a.stid
+              AND eligible.status='active' AND substr(eligible.enrolled_date,1,10)<=previous_session.session_date)
+        ORDER BY previous_session.session_date DESC,previous_session.start_time DESC,previous_session.session_id DESC
+        LIMIT 2
+      ) recent_sessions WHERE recent_sessions.status!='present') AS recent_absence_count
       FROM attendance a JOIN students s ON s.stid=a.stid
       JOIN sessions se ON se.session_id=a.session_id
       JOIN classes c ON c.class_id=?
@@ -519,7 +536,7 @@ function registerIpc() {
         ended_automatically: session.ended_automatically
       },
       attendees: attendees.map(attendee => {
-      const overdueDates = overduePaymentMonths(
+      const overdueDates = Number(attendee.discount_percentage) >= 100 ? [] : overduePaymentMonths(
         attendee.enrolled_date,
         attendee.paid_months ? attendee.paid_months.split(',') : [],
         dueDay,
@@ -628,6 +645,7 @@ function registerIpc() {
       collected: db.prepare(`SELECT COALESCE(SUM(p.amount_paid),0) AS amount FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id JOIN classes c ON c.class_id=e.class_id WHERE c.oid=? AND p.for_month=?`).get(org(), month).amount,
       due: getPendingTotal(org(), month),
       rows: db.prepare(`SELECT e.enrollment_id,e.stid,s.name,s.rfid,c.class_id,c.class_name,c.fee,e.discount_percentage,
+        CASE WHEN e.discount_percentage>=100 THEN 1 ELSE 0 END AS free_access,
         ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS due_amount,p.payment_id,p.amount_paid,p.payment_date,p.payment_time,p.notes
         FROM class_enrollments e JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
         LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
@@ -639,9 +657,13 @@ function registerIpc() {
     const db = getDatabase();
     const uniqueIds = [...new Set((enrollment_ids || []).map(Number))];
     if (!uniqueIds.length) throw new Error('Select at least one unpaid class fee.');
-    const rows = uniqueIds.map(id => db.prepare(`SELECT e.enrollment_id,e.class_id,e.enrolled_date,ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS amount,c.oid
+    const rows = uniqueIds.map(id => db.prepare(`SELECT e.enrollment_id,e.class_id,e.enrolled_date,e.discount_percentage,
+      ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS amount,c.oid
       FROM class_enrollments e JOIN classes c ON c.class_id=e.class_id WHERE e.enrollment_id=? AND e.status='active' AND c.status='active'`).get(id));
     if (rows.some(row => !row || row.oid !== org())) throw new Error('One or more selected enrollments are unavailable.');
+    if (rows.some(row => Number(row.discount_percentage) >= 100 || row.amount <= 0)) {
+      throw new Error('Free access students do not have a payment due.');
+    }
     if (rows.some(row => month < row.enrolled_date.slice(0, 7))) throw new Error('Payment cannot be recorded before the student enrolled.');
     if (session_id && rows.some(row => !db.prepare(`SELECT 1 FROM sessions s JOIN classes c ON c.class_id=s.class_id
       WHERE s.session_id=? AND s.class_id=? AND s.status='ongoing' AND c.oid=?`).get(session_id, row.class_id, org()))) {
@@ -657,12 +679,14 @@ function registerIpc() {
     if (!Array.isArray(items) || !items.length) throw new Error('Select at least one unpaid class month.');
     const db = getDatabase();
     const uniqueItems = [...new Map(items.map(item => [`${Number(item.enrollment_id)}:${item.month}`, item])).values()];
-    const select = db.prepare(`SELECT e.enrollment_id,ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS amount,c.oid,e.stid,e.enrolled_date
+    const select = db.prepare(`SELECT e.enrollment_id,e.discount_percentage,
+      ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS amount,c.oid,e.stid,e.enrolled_date
       FROM class_enrollments e JOIN classes c ON c.class_id=e.class_id WHERE e.enrollment_id=? AND e.status='active'`);
     const rows = uniqueItems.map(item => {
       if (!validMonth(item.month) || item.month > currentMonth()) throw new Error('Choose a valid payment month up to the current month.');
       const row = select.get(Number(item.enrollment_id));
       if (!row || row.oid !== org()) throw new Error('One or more selected class enrolments are unavailable.');
+      if (Number(row.discount_percentage) >= 100 || row.amount <= 0) throw new Error('Free access students do not have a payment due.');
       if (item.month < row.enrolled_date.slice(0, 7)) throw new Error('Payment cannot be recorded before the student enrolled.');
       return { ...row, month: item.month };
     });
@@ -752,8 +776,14 @@ function registerIpc() {
       COALESCE((SELECT SUM(p.amount_paid*c.teacher_commission_percentage/100.0)
         FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
         JOIN classes c ON c.class_id=e.class_id WHERE c.tid=t.tid AND c.oid=t.oid),0) AS earned,
-      COALESCE((SELECT SUM(p.amount) FROM teacher_payouts p WHERE p.tid=t.tid),0) AS paid_out
-    FROM teachers t WHERE t.oid=? ORDER BY t.name`).all(org()).map(row => ({ ...row, outstanding: money(row.earned - row.paid_out) })));
+      COALESCE((SELECT SUM(p.amount) FROM teacher_payouts p WHERE p.tid=t.tid),0) AS paid_out,
+      COALESCE((SELECT SUM(p.amount) FROM teacher_payouts p
+        WHERE p.tid=t.tid AND substr(p.payout_date,1,7)=?),0) AS paid_out_this_month
+    FROM teachers t WHERE t.oid=? ORDER BY t.name`).all(currentMonth(), org()).map(row => ({
+      ...row,
+      paid_out_this_month: money(row.paid_out_this_month),
+      outstanding: money(row.earned - row.paid_out)
+    })));
   ipcMain.handle('reports:paymentRecords', (_event, filters = {}) => {
     const db = getDatabase();
     const clauses = ['c.oid=?', 's.oid=c.oid', 't.oid=c.oid'];
@@ -849,7 +879,7 @@ function registerIpc() {
       FROM class_enrollments e JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
       JOIN teachers t ON t.tid=c.tid
       LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
-      WHERE c.oid=? AND e.status='active' AND c.status='active' AND p.payment_id IS NULL
+      WHERE c.oid=? AND e.status='active' AND c.status='active' AND e.discount_percentage<100 AND p.payment_id IS NULL
         AND substr(e.enrolled_date,1,7)<=?
       ORDER BY s.name COLLATE NOCASE,c.class_name`).all(month, org(), month);
   });

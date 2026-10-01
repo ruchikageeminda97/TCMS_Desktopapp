@@ -275,6 +275,75 @@ test('session report filters by date range and teacher with present and enrollme
   }
 });
 
+test('full-discount enrollments are free and do not accrue pending tuition', () => {
+  const db = createDatabase();
+  try {
+    const { organization, classId, student, enrollment } = seed(db);
+    db.prepare('UPDATE class_enrollments SET discount_percentage=100 WHERE enrollment_id=?').run(enrollment);
+    const row = db.prepare(`SELECT e.discount_percentage,
+        ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS due_amount,
+        CASE WHEN e.discount_percentage>=100 THEN 1 ELSE 0 END AS free_access
+      FROM class_enrollments e JOIN classes c ON c.class_id=e.class_id
+      WHERE e.enrollment_id=?`).get(enrollment);
+    assert.equal(row.due_amount, 0);
+    assert.equal(row.free_access, 1);
+    const pending = db.prepare(`SELECT COUNT(*) AS count FROM class_enrollments e
+      JOIN classes c ON c.class_id=e.class_id
+      LEFT JOIN payments p ON p.enrollment_id=e.enrollment_id AND p.for_month=?
+      WHERE c.oid=? AND e.stid=? AND e.discount_percentage<100 AND p.payment_id IS NULL`)
+      .get('2026-10', organization, student);
+    assert.equal(pending.count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('low attendance counts absences in the two most recent eligible completed sessions', () => {
+  const db = createDatabase();
+  try {
+    const { classId, student, enrollment } = seed(db);
+    db.prepare('UPDATE class_enrollments SET enrolled_date=? WHERE enrollment_id=?').run('2026-01-01', enrollment);
+    const addSession = db.prepare(`INSERT INTO sessions (class_id,session_date,start_time,status)
+      VALUES (?,?,'09:00','completed')`);
+    const past = [
+      addSession.run(classId, '2026-09-01').lastInsertRowid,
+      addSession.run(classId, '2026-09-08').lastInsertRowid,
+      addSession.run(classId, '2026-09-15').lastInsertRowid
+    ];
+    const current = db.prepare(`INSERT INTO sessions (class_id,session_date,start_time,status)
+      VALUES (?,?,'09:00','ongoing')`).run(classId, '2026-09-22').lastInsertRowid;
+    const mark = db.prepare('INSERT INTO attendance (session_id,stid,status) VALUES (?,?,?)');
+    mark.run(past[0], student, 'present');
+    mark.run(past[1], student, 'absent');
+    mark.run(past[2], student, 'absent');
+    mark.run(current, student, 'not_marked');
+    const recentAbsences = (sessionId) => db.prepare(`SELECT
+      (SELECT COUNT(*) FROM (
+      SELECT previous_attendance.status
+      FROM attendance previous_attendance
+      JOIN sessions previous_session ON previous_session.session_id=previous_attendance.session_id
+      WHERE previous_attendance.stid=a.stid AND previous_session.class_id=se.class_id
+        AND previous_session.status='completed'
+        AND (previous_session.session_date<se.session_date OR
+          (previous_session.session_date=se.session_date AND
+            (COALESCE(previous_session.start_time,'')<COALESCE(se.start_time,'') OR
+              (COALESCE(previous_session.start_time,'')=COALESCE(se.start_time,'')
+                AND previous_session.session_id<se.session_id))))
+        AND EXISTS (SELECT 1 FROM class_enrollments eligible
+          WHERE eligible.class_id=previous_session.class_id AND eligible.stid=a.stid
+            AND eligible.status='active' AND substr(eligible.enrolled_date,1,10)<=previous_session.session_date)
+      ORDER BY previous_session.session_date DESC,previous_session.start_time DESC,previous_session.session_id DESC
+      LIMIT 2) recent_sessions WHERE recent_sessions.status!='present') AS recent_absence_count
+      FROM attendance a JOIN sessions se ON se.session_id=a.session_id
+      WHERE a.session_id=? AND a.stid=?`).get(sessionId, student).recent_absence_count;
+    assert.equal(recentAbsences(current), 2);
+    db.prepare("UPDATE attendance SET status='present' WHERE session_id=? AND stid=?").run(past[2], student);
+    assert.equal(recentAbsences(current), 1);
+  } finally {
+    db.close();
+  }
+});
+
 test('attendance records student punch time and computes lateness from class start', () => {
   const db = createDatabase();
   try {
@@ -438,6 +507,27 @@ test('special sessions persist as one-time records with optional hall assignment
       { session_date: '2026-09-15', start_time: '17:00', end_time: '19:00', hall_id: hallId, is_special: 1 },
       { session_date: '2026-09-20', start_time: '18:00', end_time: '20:00', hall_id: null, is_special: 1 }
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test('teacher balances include current-month payouts separately from lifetime payouts', () => {
+  const db = createDatabase();
+  try {
+    const { organization, teacher } = seed(db);
+    db.prepare('INSERT INTO teacher_payouts (tid,amount,payout_date) VALUES (?,?,?)')
+      .run(teacher, 250, '2026-10-01');
+    db.prepare('INSERT INTO teacher_payouts (tid,amount,payout_date) VALUES (?,?,?)')
+      .run(teacher, 100, '2026-09-30');
+    const balance = db.prepare(`SELECT
+      COALESCE((SELECT SUM(p.amount) FROM teacher_payouts p WHERE p.tid=t.tid),0) AS paid_out,
+      COALESCE((SELECT SUM(p.amount) FROM teacher_payouts p
+        WHERE p.tid=t.tid AND substr(p.payout_date,1,7)=?),0) AS paid_out_this_month
+      FROM teachers t WHERE t.oid=? AND t.tid=?`)
+      .get('2026-10', organization, teacher);
+    assert.equal(balance.paid_out, 350);
+    assert.equal(balance.paid_out_this_month, 250);
   } finally {
     db.close();
   }
