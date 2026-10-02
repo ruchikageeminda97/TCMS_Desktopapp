@@ -34,7 +34,11 @@ contextBridge.exposeInMainWorld('tuition', Object.freeze({
     start: invoke('sessions:start'), classStarted: invoke('sessions:classStarted'),
     mark: invoke('sessions:mark'), end: invoke('sessions:end')
   },
-  payments: { overview: invoke('payments:overview'), pay: invoke('payments:pay') },
+  payments: {
+    overview: invoke('payments:overview'), pay: invoke('payments:pay'),
+    pendingFees: invoke('payments:pendingFees'), make: invoke('payments:make'),
+    receipt: invoke('payments:receipt')
+  },
   reports: {
     classEarnings: invoke('reports:classEarnings'),
     exportClassPaymentPDF: invoke('reports:exportClassPaymentPDF'),

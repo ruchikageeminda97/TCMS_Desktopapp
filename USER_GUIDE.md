@@ -141,18 +141,18 @@ Completed sessions can be opened with **View register**. Their attendance is ava
 
 ## 9. Payments
 
-The Payments page has **Student payments** and **Teacher payments** tabs.
+The Payments page has **Make payment**, **Student payments**, **Teacher payments**, and **Payment records** tabs. **Make payment** opens by default.
 
-### Record student tuition
+### Make a student payment
 
-1. Open **Payments → Student payments**.
-2. Choose the month to review. The summary cards show collections and outstanding tuition for the selected month.
-3. Search the table or filter it by student. Select one or more unpaid, non-free student/class rows.
-4. Select **Record selected** and review the payment before confirming it.
-5. Confirming records the monthly payment against the student and class. A student cannot be charged for the same class and month twice through the normal payment flow.
+1. Open **Payments → Make payment** and search students by name or RFID.
+2. Select one or more students. Their unpaid monthly class fees appear automatically, with earlier months first; previous months are highlighted in red.
+3. All displayed fees are selected by default. Deselect any fee that should not be included, then review the total at the bottom.
+4. Select **Make payment** and confirm the listed fees. A unique 8-digit receipt number is created for the batch.
+5. Use **Payment records** to enter or scan the receipt number and verify the date, time, student, class, month, and amount.
 6. A 100%-discount enrolment has no amount due and is not offered as a payable item.
 
-Student tuition can also be marked paid from an active attendance register. The payment is still recorded for the current month.
+Student tuition can also be marked paid from an active attendance register or the existing **Student payments** tab. These payment flows also create a receipt number, and duplicate class/month payments remain blocked.
 
 ### Review student payment history
 

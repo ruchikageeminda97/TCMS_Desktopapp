@@ -657,6 +657,52 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
 .payment-review-row span{color:#626b7a;font-size:13px}
 .payment-review-total{display:flex;justify-content:space-between;align-items:center;padding:14px 2px;color:#4f5867}
 .payment-review-total b{font-size:18px;color:#292f3d}
+.make-payment-panel{overflow:hidden}
+.make-payment-panel>.report-heading{padding:16px 18px 8px}
+.make-payment-panel .report-heading h2,.payment-receipt-panel .report-heading h2{margin:0 0 4px;font-size:17px}
+.make-payment-panel .report-heading p,.payment-receipt-panel .report-heading p{margin:0;color:#6d7583;font-size:13px}
+.make-payment-search{margin:0 18px 10px;max-width:480px}
+.make-payment-students{max-height:180px;overflow:auto;margin:0 18px;padding:3px 0;border:1px solid #e7e9ed;border-radius:8px}
+.make-payment-student{min-height:44px;display:flex;align-items:center;gap:10px;padding:7px 11px;border-bottom:1px solid #eff0f3;cursor:pointer}
+.make-payment-student:last-child{border-bottom:0}
+.make-payment-student>span{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
+.make-payment-student b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#343b49;font-size:13px}
+.make-payment-student small{color:#727b89;font-size:11px}
+.make-payment-student input,.make-payment-fee input{accent-color:#654fd0;flex:none}
+.make-payment-fees-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px 9px}
+.make-payment-fees-heading h3{margin:0 0 3px;color:#343b49;font-size:15px}
+.make-payment-fees-heading p{margin:0;color:#727b89;font-size:12px}
+.make-payment-fees-heading>span{color:#5e4bc0;font-size:12px;font-weight:750;white-space:nowrap}
+.make-payment-fees{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;max-height:352px;overflow:auto;margin:0 18px;padding:2px}
+.make-payment-fee{min-height:75px;display:flex;align-items:center;gap:10px;padding:10px;border:1px solid #e5e7ed;border-radius:8px;background:#fbfcfe;cursor:pointer}
+.make-payment-fee.pending-fee-past{border-color:#e9b7bd;background:rgba(211,57,70,.09);color:#87323c}
+.make-payment-fee-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:5px}
+.make-payment-fee-copy b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.make-payment-fee-copy>span{color:#697281;font-size:12px}
+.pending-fee-past .make-payment-fee-copy>span{color:#9a4a53}
+.make-payment-fee-amount{font-size:13px;white-space:nowrap}
+.make-payment-empty{padding:19px;text-align:center;color:#737c8a;font-size:13px}
+.make-payment-footer{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;padding:13px 18px;border-top:1px solid #e8e9ed;background:#fff}
+.make-payment-footer>div{display:flex;flex-direction:column;gap:4px;color:#697281;font-size:12px}
+.make-payment-footer b{color:#282f3c;font-size:20px}
+.payment-receipt-panel{overflow:hidden}
+.payment-receipt-panel>.report-heading{padding:16px 18px}
+.payment-receipt-search{padding:0 18px 16px}
+.payment-receipt-search>label{display:block;margin-bottom:6px;color:#535d6b;font-size:12px;font-weight:700}
+.payment-receipt-search>div{display:flex;gap:9px;max-width:520px}
+.payment-receipt-search input{height:42px;flex:1;min-width:0;padding:0 12px;border:1px solid #c9ced7;border-radius:7px;font-size:16px;letter-spacing:2px}
+.payment-receipt-result{border-top:1px solid #eff0f3}
+.payment-receipt-summary{display:flex;flex-wrap:wrap;gap:24px;padding:15px 18px}
+.payment-receipt-summary>div{display:flex;flex-direction:column;gap:5px}
+.payment-receipt-summary span{color:#737c8a;font-size:11px}
+.payment-receipt-summary b{color:#333b49;font-size:14px}
+.payment-receipt-result .table-wrap{margin:0 18px 18px}
+@media(max-width:520px){
+  .make-payment-fees{grid-template-columns:1fr;max-height:352px}
+  .make-payment-footer{align-items:stretch;flex-direction:column}
+  .payment-receipt-search>div{align-items:stretch;flex-direction:column}
+  .payment-receipt-summary{gap:14px}
+}
 .hall-calendar{margin-top:15px}
 .hall-calendar-scroll{overflow-x:auto;padding:0 14px 14px}
 .hall-calendar-grid{min-width:1100px;display:grid;grid-template-columns:170px repeat(7,minmax(132px,1fr));border-top:1px solid #e6e8ed;border-left:1px solid #e6e8ed}

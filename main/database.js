@@ -19,6 +19,32 @@ function openDatabase(filePath) {
   if (!studentColumns.has('photo_data')) {
     db.exec('ALTER TABLE students ADD COLUMN photo_data TEXT');
   }
+  const paymentColumns = new Set(db.pragma('table_info(payments)').map(column => column.name));
+  if (!paymentColumns.has('receipt_id')) {
+    db.exec('ALTER TABLE payments ADD COLUMN receipt_id INTEGER REFERENCES payment_receipts(receipt_id)');
+  }
+  const historicalPayments = db.prepare(`SELECT p.payment_id,p.payment_date,p.payment_time,p.recorded_by,c.oid
+    FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+    JOIN classes c ON c.class_id=e.class_id
+    WHERE p.receipt_id IS NULL ORDER BY p.payment_id`).all();
+  if (historicalPayments.length) {
+    const migratePayments = db.transaction(() => {
+      const insertReceipt = db.prepare(`INSERT INTO payment_receipts
+        (oid,payment_date,payment_time,recorded_by) VALUES (?,?,?,?)`);
+      const setReceiptCode = db.prepare('UPDATE payment_receipts SET receipt_code=? WHERE receipt_id=?');
+      const linkPayment = db.prepare('UPDATE payments SET receipt_id=? WHERE payment_id=?');
+      for (const payment of historicalPayments) {
+        const receiptId = insertReceipt.run(
+          payment.oid, payment.payment_date, payment.payment_time, payment.recorded_by
+        ).lastInsertRowid;
+        const receiptCode = String(receiptId).padStart(8, '0');
+        if (receiptCode.length > 8) throw new Error('Payment receipt number limit reached during database migration.');
+        setReceiptCode.run(receiptCode, receiptId);
+        linkPayment.run(receiptId, payment.payment_id);
+      }
+    });
+    migratePayments();
+  }
   const legacyDueDates = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='payment_due_dates'").get();
   if (legacyDueDates) {
     db.exec(`UPDATE organizations

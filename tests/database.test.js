@@ -10,6 +10,7 @@ const { buildAttendanceReportHtml } = require('../main/attendance-report');
 const { buildDailySummaryReportHtml } = require('../main/daily-summary-report');
 const { buildClassPaymentReportHtml } = require('../main/class-payment-report');
 const { openDatabase } = require('../main/database');
+const { recordPaymentReceipt } = require('../main/payment-receipt');
 const { completeOngoingSession, endExpiredSessions } = require('../main/session-lifecycle');
 
 function createDatabase() {
@@ -31,9 +32,11 @@ test('schema creates the full tenant-scoped tuition management data model', () =
   const db = createDatabase();
   try {
     const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
-    for (const table of ['organizations', 'users', 'students', 'teachers', 'halls', 'hall_availability', 'classes', 'class_schedules', 'class_enrollments', 'sessions', 'attendance', 'payments', 'teacher_payouts', 'teacher_payout_details', 'backup_logs']) {
+    for (const table of ['organizations', 'users', 'students', 'teachers', 'halls', 'hall_availability', 'classes', 'class_schedules', 'class_enrollments', 'sessions', 'attendance', 'payment_receipts', 'payments', 'teacher_payouts', 'teacher_payout_details', 'backup_logs']) {
       assert.ok(tables.has(table), `missing ${table}`);
     }
+    const paymentColumns = new Set(db.pragma('table_info(payments)').map(column => column.name));
+    assert.ok(paymentColumns.has('receipt_id'));
     const organizationColumns = new Set(db.pragma('table_info(organizations)').map(column => column.name));
     assert.ok(organizationColumns.has('payment_due_day'));
     const studentColumns = new Set(db.pragma('table_info(students)').map(column => column.name));
@@ -77,6 +80,18 @@ test('opening an existing database migrates session timing and attendance punch 
     oid INTEGER NOT NULL,
     name TEXT NOT NULL
   );
+  CREATE TABLE classes (
+    class_id INTEGER PRIMARY KEY,
+    oid INTEGER NOT NULL
+  );
+  CREATE TABLE class_enrollments (
+    enrollment_id INTEGER PRIMARY KEY,
+    class_id INTEGER NOT NULL,
+    stid INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    enrolled_date TEXT NOT NULL,
+    discount_percentage REAL NOT NULL
+  );
   CREATE TABLE attendance (
     attendance_id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
@@ -84,6 +99,20 @@ test('opening an existing database migrates session timing and attendance punch 
     status TEXT NOT NULL DEFAULT 'not_marked',
     marked_at TEXT
   );
+  CREATE TABLE payments (
+    payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    enrollment_id INTEGER NOT NULL,
+    for_month TEXT NOT NULL,
+    amount_paid REAL NOT NULL,
+    payment_date TEXT NOT NULL,
+    payment_time TEXT NOT NULL,
+    recorded_by INTEGER
+  );
+  INSERT INTO classes (class_id,oid) VALUES (1,1);
+  INSERT INTO class_enrollments (enrollment_id,class_id,stid,status,enrolled_date,discount_percentage)
+    VALUES (1,1,1,'active','2026-09-01',0);
+  INSERT INTO payments (enrollment_id,for_month,amount_paid,payment_date,payment_time)
+    VALUES (1,'2026-09',1000,'2026-09-15','09:30:00');
   CREATE TABLE payment_due_dates (
     due_date_id INTEGER PRIMARY KEY AUTOINCREMENT,
     oid INTEGER NOT NULL REFERENCES organizations(oid),
@@ -108,6 +137,10 @@ test('opening an existing database migrates session timing and attendance punch 
       assert.equal(upgraded.prepare('SELECT payment_due_day FROM organizations WHERE oid=1').get().payment_due_day, 15);
       assert.ok(new Set(upgraded.pragma('table_info(students)').map(column => column.name)).has('photo_data'));
       assert.ok(new Set(upgraded.pragma('table_info(attendance)').map(column => column.name)).has('present_at'));
+      assert.ok(new Set(upgraded.pragma('table_info(payments)').map(column => column.name)).has('receipt_id'));
+      assert.ok(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='payment_receipts'").get());
+      assert.equal(upgraded.prepare('SELECT receipt_id FROM payments WHERE payment_id=1').get().receipt_id, 1);
+      assert.equal(upgraded.prepare('SELECT receipt_code FROM payment_receipts WHERE receipt_id=1').get().receipt_code, '00000001');
     } finally {
       upgraded.close();
     }
@@ -168,6 +201,36 @@ test('enrolments upsert discounts and monthly payments use the discounted fee on
     addPayment.run(enrollment.enrollment_id, '2026-09', amount, '2026-09-01', '09:30:00');
     assert.throws(() => addPayment.run(enrollment.enrollment_id, '2026-09', amount, '2026-09-02', '10:00:00'), /UNIQUE constraint failed/);
     assert.equal(db.prepare('SELECT SUM(amount_paid) AS total FROM payments WHERE for_month=?').get('2026-09').total, 500);
+  } finally {
+    db.close();
+  }
+});
+
+test('payment batches receive one unique 8-digit receipt and roll back atomically', () => {
+  const db = createDatabase();
+  try {
+    const { organization, enrollment, classId } = seed(db);
+    const first = recordPaymentReceipt(db, organization, [
+      { enrollment_id: enrollment, for_month: '2026-08', amount: 500 },
+      { enrollment_id: enrollment, for_month: '2026-09', amount: 500 }
+    ], { date: '2026-10-02', time: '09:30:00', userId: null });
+    assert.equal(first.receipt_code, '00000001');
+    assert.equal(first.receipt_code.length, 8);
+    assert.deepEqual(db.prepare('SELECT DISTINCT receipt_id,payment_date,payment_time FROM payments').all(), [{
+      receipt_id: first.receipt_id,
+      payment_date: '2026-10-02',
+      payment_time: '09:30:00'
+    }]);
+    const secondStudent = db.prepare('INSERT INTO students (oid,name,contact1) VALUES (?,?,?)')
+      .run(organization, 'Second Student', '555-0101').lastInsertRowid;
+    const secondEnrollment = db.prepare('INSERT INTO class_enrollments (class_id,stid) VALUES (?,?)')
+      .run(classId, secondStudent).lastInsertRowid;
+    assert.throws(() => recordPaymentReceipt(db, organization, [
+      { enrollment_id: secondEnrollment, for_month: '2026-10', amount: 1000 },
+      { enrollment_id: enrollment, for_month: '2026-08', amount: 500 }
+    ], { date: '2026-10-02', time: '09:31:00', userId: null }), /UNIQUE constraint failed/);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM payment_receipts').get().count, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM payments').get().count, 2);
   } finally {
     db.close();
   }
@@ -246,6 +309,8 @@ test('session report filters by date range and teacher with present and enrollme
       .run(first.organization, 'Morgan Student', '555-0102').lastInsertRowid;
     db.prepare('INSERT INTO class_enrollments (class_id,stid) VALUES (?,?)').run(first.classId, secondStudent);
     db.prepare('INSERT INTO class_enrollments (class_id,stid) VALUES (?,?)').run(otherClass, secondStudent);
+    db.prepare("UPDATE class_enrollments SET enrolled_date='2026-09-01' WHERE class_id IN (?,?)")
+      .run(first.classId, otherClass);
     const firstSession = db.prepare(`INSERT INTO sessions (class_id,session_date,start_time,end_time,status)
       VALUES (?,?,'09:00','10:00','completed')`).run(first.classId, '2026-09-30').lastInsertRowid;
     const secondSession = db.prepare(`INSERT INTO sessions (class_id,session_date,start_time,end_time,status)

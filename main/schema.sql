@@ -105,9 +105,18 @@ CREATE TABLE IF NOT EXISTS attendance (
   present_at TEXT,
   UNIQUE (session_id, stid)
 );
+CREATE TABLE IF NOT EXISTS payment_receipts (
+  receipt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  oid INTEGER NOT NULL REFERENCES organizations(oid) ON DELETE CASCADE,
+  receipt_code TEXT UNIQUE CHECK (receipt_code IS NULL OR length(receipt_code) = 8),
+  payment_date TEXT NOT NULL,
+  payment_time TEXT NOT NULL,
+  recorded_by INTEGER REFERENCES users(user_id)
+);
 CREATE TABLE IF NOT EXISTS payments (
   payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
   enrollment_id INTEGER NOT NULL REFERENCES class_enrollments(enrollment_id),
+  receipt_id INTEGER REFERENCES payment_receipts(receipt_id),
   for_month TEXT NOT NULL,
   amount_paid REAL NOT NULL CHECK (amount_paid >= 0),
   payment_date TEXT NOT NULL,

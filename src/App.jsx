@@ -1984,7 +1984,7 @@ function AttendancePage({ version, refresh, setModal, notify }) {
 
 function PaymentsPage({ version, setModal, notify }) {
   const [month, setMonth] = useState(thisMonth());
-  const [paymentTab, setPaymentTab] = useState("students");
+  const [paymentTab, setPaymentTab] = useState("make");
   const [studentFilter, setStudentFilter] = useState("");
   const [historyPeriod, setHistoryPeriod] = useState("3");
   const [historyMonth, setHistoryMonth] = useState(thisMonth());
@@ -2045,7 +2045,7 @@ function PaymentsPage({ version, setModal, notify }) {
         eyebrow="CLEAR, SIMPLE FEE TRACKING"
         title="Payments"
         subtitle="See what’s been collected and record monthly tuition fees."
-        action={
+        action={paymentTab === "students" ? (
           <Button
             icon={CreditCard}
             onClick={() => pay(selected)}
@@ -2053,13 +2053,21 @@ function PaymentsPage({ version, setModal, notify }) {
           >
             Record selected{selected.length ? ` (${selected.length})` : ""}
           </Button>
-        }
+        ) : null}
       />
       <div className="report-tabs payment-tabs" role="tablist" aria-label="Payment sections">
-        <button className={paymentTab === "students" ? "active" : ""} onClick={() => setPaymentTab("students")}>Student payments</button>
-        <button className={paymentTab === "teachers" ? "active" : ""} onClick={() => setPaymentTab("teachers")}>Teacher payments</button>
+        <button type="button" role="tab" aria-selected={paymentTab === "make"} className={paymentTab === "make" ? "active" : ""} onClick={() => setPaymentTab("make")}>Make payment</button>
+        <button type="button" role="tab" aria-selected={paymentTab === "students"} className={paymentTab === "students" ? "active" : ""} onClick={() => setPaymentTab("students")}>Student payments</button>
+        <button type="button" role="tab" aria-selected={paymentTab === "teachers"} className={paymentTab === "teachers" ? "active" : ""} onClick={() => setPaymentTab("teachers")}>Teacher payments</button>
+        <button type="button" role="tab" aria-selected={paymentTab === "records"} className={paymentTab === "records" ? "active" : ""} onClick={() => setPaymentTab("records")}>Payment records</button>
       </div>
-      {paymentTab === "students" ? (
+      {paymentTab === "make" ? (
+        <MakePaymentPanel
+          version={version}
+          students={(studentList || []).filter((student) => student.status === "active")}
+          setModal={setModal}
+        />
+      ) : paymentTab === "students" ? (
       <>
       <div className="payment-summary-grid">
         <div className="payment-summary panel">
@@ -2322,10 +2330,190 @@ function PaymentsPage({ version, setModal, notify }) {
         </section>
       )}
       </>
-      ) : (
+      ) : paymentTab === "teachers" ? (
         <TeacherPaymentsPanel version={version} setModal={setModal} notify={notify} />
+      ) : (
+        <PaymentReceiptLookup />
       )}
     </div>
+  );
+}
+
+function MakePaymentPanel({ version, students, setModal }) {
+  const [query, setQuery] = useState("");
+  const [selectedStudentIds, setSelectedStudentIds] = useState([]);
+  const [excludedFees, setExcludedFees] = useState([]);
+  const { data: pendingFees, error } = useLoad(
+    () => api.payments.pendingFees(),
+    [version],
+  );
+  const matches = students.filter((student) =>
+    `${student.name} ${student.rfid || ""}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const studentIds = new Set(selectedStudentIds);
+  const selectedFees = (pendingFees || []).filter((fee) =>
+    studentIds.has(fee.stid) && !excludedFees.includes(`${fee.enrollment_id}:${fee.for_month}`),
+  );
+  const total = selectedFees.reduce((sum, fee) => sum + Number(fee.due_amount || 0), 0);
+  const toggleStudent = (stid, checked) => {
+    setSelectedStudentIds((ids) => checked
+      ? [...ids, stid]
+      : ids.filter((id) => id !== stid));
+    if (checked) {
+      const enrollmentIds = new Set((pendingFees || [])
+        .filter((fee) => fee.stid === stid)
+        .map((fee) => `${fee.enrollment_id}:${fee.for_month}`));
+      setExcludedFees((keys) => keys.filter((key) => !enrollmentIds.has(key)));
+    }
+  };
+  const toggleFee = (fee, checked) => {
+    const key = `${fee.enrollment_id}:${fee.for_month}`;
+    setExcludedFees((keys) => checked
+      ? keys.filter((item) => item !== key)
+      : keys.includes(key) ? keys : [...keys, key]);
+  };
+  const makePayment = () => {
+    if (!selectedFees.length) return;
+    setModal({ type: "payment-batch-review", items: selectedFees });
+  };
+  return (
+    <section className="panel data-panel make-payment-panel">
+      <div className="report-heading">
+        <div>
+          <h2>Select students</h2>
+          <p>Search by student name or RFID, then choose one or more students.</p>
+        </div>
+      </div>
+      <div className="make-payment-search table-search">
+        <Search size={16} />
+        <input
+          aria-label="Search students by name or RFID for payment"
+          placeholder="Search student name or RFID…"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
+      <div className="make-payment-students" aria-label="Matching students">
+        {matches.length ? matches.map((student) => (
+          <label className="make-payment-student" key={student.stid}>
+            <input
+              type="checkbox"
+              checked={selectedStudentIds.includes(student.stid)}
+              onChange={(event) => toggleStudent(student.stid, event.target.checked)}
+            />
+            <span><b>{student.name}</b><small>{student.rfid || "No RFID"}</small></span>
+            <small>{(pendingFees || []).filter((fee) => fee.stid === student.stid).length} pending</small>
+          </label>
+        )) : <div className="make-payment-empty">No students match that name or RFID.</div>}
+      </div>
+      <div className="make-payment-fees-heading">
+        <div><h3>Pending payments</h3><p>Earlier months appear first. Red cards are previous months.</p></div>
+        <span>{selectedFees.length} selected</span>
+      </div>
+      {error ? <div className="error-inline">{error}</div> : selectedFees.length ? (
+        <div className="make-payment-fees">
+          {selectedFees.map((fee) => {
+            const key = `${fee.enrollment_id}:${fee.for_month}`;
+            const pastDue = fee.for_month < thisMonth();
+            return (
+              <label className={`make-payment-fee ${pastDue ? "pending-fee-past" : ""}`} key={key}>
+                <input
+                  type="checkbox"
+                  checked
+                  onChange={(event) => toggleFee(fee, event.target.checked)}
+                  aria-label={`Include ${fee.name} ${fee.class_name} for ${fee.for_month}`}
+                />
+                <span className="make-payment-fee-copy">
+                  <b>{fee.name}</b>
+                  <span>{fee.class_name} · {new Date(`${fee.for_month}-02`).toLocaleDateString(undefined, { month: "long", year: "numeric" })}</span>
+                </span>
+                <b className="make-payment-fee-amount">{money(fee.due_amount)}</b>
+              </label>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="make-payment-empty">
+          {selectedStudentIds.length
+            ? "The selected students have no pending payments."
+            : "Select students to view their pending monthly payments."}
+        </div>
+      )}
+      <div className="make-payment-footer">
+        <div><span>Total amount to pay</span><b>{money(total)}</b></div>
+        <Button icon={CreditCard} onClick={makePayment} disabled={!selectedFees.length}>
+          Make payment
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function PaymentReceiptLookup() {
+  const [code, setCode] = useState("");
+  const [receipt, setReceipt] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const lookup = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    setReceipt(null);
+    try {
+      const result = await api.payments.receipt(code);
+      if (!result) setError("No payment record was found for that receipt number.");
+      else setReceipt(result);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <section className="panel data-panel payment-receipt-panel">
+      <div className="report-heading">
+        <div><h2>Find a payment receipt</h2><p>Enter or scan the 8-digit receipt number to verify its payment details.</p></div>
+      </div>
+      <form className="payment-receipt-search" onSubmit={lookup}>
+        <label htmlFor="payment-receipt-code">Receipt / barcode number</label>
+        <div>
+          <input
+            id="payment-receipt-code"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={8}
+            pattern="[0-9]{8}"
+            placeholder="00000001"
+            value={code}
+            onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
+          />
+          <Button type="submit" disabled={loading || code.length !== 8}>
+            {loading ? "Searching…" : "Check payment"}
+          </Button>
+        </div>
+      </form>
+      {error && <div className="error-inline">{error}</div>}
+      {receipt && (
+        <div className="payment-receipt-result">
+          <div className="payment-receipt-summary">
+            <div><span>Receipt number</span><b>{receipt.receipt_code}</b></div>
+            <div><span>Paid on</span><b>{prettyDate(receipt.payment_date)} · {receipt.payment_time}</b></div>
+            <div><span>Payment total</span><b>{money(receipt.total)}</b></div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>STUDENT</th><th>RFID</th><th>CLASS</th><th>FOR MONTH</th><th>AMOUNT PAID</th></tr></thead>
+              <tbody>{receipt.rows.map((row) => (
+                <tr key={row.payment_id}>
+                  <td><b>{row.student_name}</b></td><td>{row.rfid || "—"}</td>
+                  <td>{row.class_name}</td><td>{row.for_month}</td><td><b>{money(row.amount_paid)}</b></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -3173,6 +3361,13 @@ function ModalHost({
         finish={finish}
         notify={notify}
       />
+    ) : modal.type === "payment-batch-review" ? (
+      <BatchPaymentReview
+        items={modal.items}
+        close={close}
+        finish={finish}
+        notify={notify}
+      />
     ) : modal.type === "student-fee-review" ? (
       <StudentFeeReview
         fees={modal.fees}
@@ -3265,12 +3460,12 @@ function PaymentReview({ rows, month, sessionId, onComplete, close, finish, noti
     setSaving(true);
     setError("");
     try {
-      await api.payments.pay({
+      const receipt = await api.payments.pay({
         enrollment_ids: rows.map((row) => row.enrollment_id),
         month,
         session_id: sessionId,
       });
-      notify(`${rows.length} payment${rows.length === 1 ? "" : "s"} recorded.`);
+      notify(`${rows.length} payment${rows.length === 1 ? "" : "s"} recorded. Receipt number: ${receipt.receipt_code}`);
       if (onComplete) onComplete();
       else finish();
     } catch (err) {
@@ -3318,6 +3513,57 @@ function PaymentReview({ rows, month, sessionId, onComplete, close, finish, noti
   );
 }
 
+function BatchPaymentReview({ items, close, finish, notify }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const total = items.reduce((sum, item) => sum + Number(item.due_amount || 0), 0);
+  const confirm = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const receipt = await api.payments.make(items.map((item) => ({
+        enrollment_id: item.enrollment_id,
+        for_month: item.for_month,
+      })));
+      notify(`Payment recorded. Receipt number: ${receipt.receipt_code}`);
+      finish();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <>
+      <ModalTitle
+        eyebrow="PAYMENT CONFIRMATION"
+        title="Make payment"
+        description={`Confirm ${items.length} selected pending payment${items.length === 1 ? "" : "s"}. A unique receipt number will be created.`}
+        close={close}
+      />
+      <div className="payment-review-content">
+        <div className="payment-review-list">
+          {items.map((item) => (
+            <div className="payment-review-row" key={`${item.enrollment_id}-${item.for_month}`}>
+              <div><b>{item.name} · {item.class_name}</b><span>{item.for_month}</span></div>
+              <b>{money(item.due_amount)}</b>
+            </div>
+          ))}
+        </div>
+        <div className="payment-review-total"><span>Total amount to pay</span><b>{money(total)}</b></div>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <Button kind="secondary" onClick={close} disabled={saving}>Cancel</Button>
+          <Button onClick={confirm} disabled={saving}>
+            {saving ? "Recording…" : "Confirm payment"}
+            <Check size={15} />
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function StudentFeeReview({ fees, studentName, revise, close, finish, notify }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -3326,11 +3572,11 @@ function StudentFeeReview({ fees, studentName, revise, close, finish, notify }) 
     setSaving(true);
     setError("");
     try {
-      await api.students.payFees(fees.map((fee) => ({
+      const receipt = await api.students.payFees(fees.map((fee) => ({
         enrollment_id: fee.enrollment_id,
         month: fee.month,
       })));
-      notify("Selected tuition payments recorded.");
+      notify(`Selected tuition payments recorded. Receipt number: ${receipt.receipt_code}`);
       finish();
     } catch (err) {
       setError(err.message);

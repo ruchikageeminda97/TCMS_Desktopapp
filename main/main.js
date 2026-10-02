@@ -10,6 +10,7 @@ const { buildDailySummaryReportHtml } = require('./daily-summary-report');
 const { buildClassPaymentReportHtml } = require('./class-payment-report');
 const { createTemplateBuffer, parseExcelRecords } = require('./record-import');
 const { completeOngoingSession, endExpiredSessions } = require('./session-lifecycle');
+const { recordPaymentReceipt } = require('./payment-receipt');
 
 let window;
 let activeUser = null;
@@ -652,6 +653,103 @@ function registerIpc() {
         WHERE c.oid=? AND e.status='active' AND c.status='active' AND substr(e.enrolled_date,1,7)<=? ORDER BY s.name,c.class_name`).all(month, org(), month)
     };
   });
+  ipcMain.handle('payments:pendingFees', () => {
+    const db = getDatabase();
+    const enrollments = db.prepare(`SELECT e.enrollment_id,e.stid,s.name,s.rfid,c.class_name,c.fee,
+        e.discount_percentage,e.enrolled_date
+      FROM class_enrollments e
+      JOIN students s ON s.stid=e.stid
+      JOIN classes c ON c.class_id=e.class_id
+      WHERE c.oid=? AND s.oid=c.oid AND s.status='active'
+        AND e.status='active' AND c.status='active'
+        AND e.discount_percentage<100
+      ORDER BY s.name COLLATE NOCASE,c.class_name COLLATE NOCASE`).all(org());
+    const current = currentMonth();
+    const paidMonths = new Set(db.prepare(`SELECT p.enrollment_id,p.for_month FROM payments p
+      JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+      JOIN classes c ON c.class_id=e.class_id
+      WHERE c.oid=? AND e.status='active' AND c.status='active'`).all(org())
+      .map(payment => `${payment.enrollment_id}:${payment.for_month}`));
+    const pending = [];
+    for (const enrollment of enrollments) {
+      const start = enrollment.enrolled_date.slice(0, 7);
+      if (start > current) continue;
+      const [year, month] = start.split('-').map(Number);
+      for (let date = new Date(Date.UTC(year, month - 1, 1)); date.toISOString().slice(0, 7) <= current; date.setUTCMonth(date.getUTCMonth() + 1)) {
+        const forMonth = date.toISOString().slice(0, 7);
+        if (paidMonths.has(`${enrollment.enrollment_id}:${forMonth}`)) continue;
+        pending.push({
+          enrollment_id: enrollment.enrollment_id,
+          stid: enrollment.stid,
+          name: enrollment.name,
+          rfid: enrollment.rfid,
+          class_name: enrollment.class_name,
+          for_month: forMonth,
+          due_amount: money(enrollment.fee * (1 - enrollment.discount_percentage / 100))
+        });
+      }
+    }
+    return pending.sort((a, b) => a.for_month.localeCompare(b.for_month)
+      || a.name.localeCompare(b.name) || a.class_name.localeCompare(b.class_name));
+  });
+  ipcMain.handle('payments:make', (_event, items) => {
+    if (!Array.isArray(items) || !items.length) throw new Error('Select at least one pending payment.');
+    const current = currentMonth();
+    const uniqueItems = [...new Map(items.map(item => {
+      const enrollmentId = Number(item?.enrollment_id);
+      return [`${enrollmentId}:${item?.for_month}`, { enrollment_id: enrollmentId, for_month: item?.for_month }];
+    })).values()];
+    const db = getDatabase();
+    const select = db.prepare(`SELECT e.enrollment_id,e.stid,e.enrolled_date,e.discount_percentage,
+        ROUND(c.fee*(1-e.discount_percentage/100.0),2) AS amount,c.class_name,s.name,s.oid AS student_oid,c.oid
+      FROM class_enrollments e JOIN classes c ON c.class_id=e.class_id
+      JOIN students s ON s.stid=e.stid
+      WHERE e.enrollment_id=? AND e.status='active' AND c.status='active' AND s.status='active'`);
+    const rows = uniqueItems.map(item => {
+      if (!Number.isInteger(item.enrollment_id) || item.enrollment_id < 1
+        || !validMonth(item.for_month) || item.for_month > current) {
+        throw new Error('One or more selected payments are invalid.');
+      }
+      const row = select.get(item.enrollment_id);
+      if (!row || row.oid !== org() || row.student_oid !== org()) {
+        throw new Error('One or more selected class enrolments are unavailable.');
+      }
+      if (item.for_month < row.enrolled_date.slice(0, 7)) {
+        throw new Error('Payment cannot be recorded before the student enrolled.');
+      }
+      if (Number(row.discount_percentage) >= 100 || row.amount <= 0) {
+        throw new Error('Free access students do not have a payment due.');
+      }
+      if (db.prepare('SELECT 1 FROM payments WHERE enrollment_id=? AND for_month=?').get(item.enrollment_id, item.for_month)) {
+        throw new Error('One or more selected payments have already been recorded.');
+      }
+      return { ...row, for_month: item.for_month };
+    });
+    return recordPaymentReceipt(db, org(), rows.map(row => ({
+      enrollment_id: row.enrollment_id,
+      for_month: row.for_month,
+      amount: row.amount
+    })), {
+      date: today(),
+      time: new Date().toTimeString().slice(0, 8),
+      userId: requireUser().user_id
+    });
+  });
+  ipcMain.handle('payments:receipt', (_event, code) => {
+    const receiptCode = String(code || '').trim().toUpperCase();
+    if (!/^\d{8}$/.test(receiptCode)) throw new Error('Enter an 8-digit payment receipt number.');
+    const db = getDatabase();
+    const receipt = db.prepare(`SELECT receipt_id,receipt_code,payment_date,payment_time
+      FROM payment_receipts WHERE oid=? AND receipt_code=?`).get(org(), receiptCode);
+    if (!receipt) return null;
+    const rows = db.prepare(`SELECT p.payment_id,p.for_month,p.amount_paid,s.stid,s.name AS student_name,
+        s.rfid,c.class_name
+      FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+      JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
+      WHERE p.receipt_id=? AND c.oid=? AND s.oid=c.oid
+      ORDER BY p.for_month,s.name COLLATE NOCASE,c.class_name COLLATE NOCASE`).all(receipt.receipt_id, org());
+    return { ...receipt, rows, total: money(rows.reduce((sum, row) => sum + Number(row.amount_paid), 0)) };
+  });
   ipcMain.handle('payments:pay', (_event, { enrollment_ids, month, session_id, notes }) => {
     if (!validMonth(month) || month > currentMonth()) throw new Error('Choose a payment month up to the current month.');
     const db = getDatabase();
@@ -669,11 +767,17 @@ function registerIpc() {
       WHERE s.session_id=? AND s.class_id=? AND s.status='ongoing' AND c.oid=?`).get(session_id, row.class_id, org()))) {
       throw new Error('This session is not open for the selected class.');
     }
-    const date = today();
-    const time = new Date().toTimeString().slice(0, 8);
-    const insert = db.prepare('INSERT INTO payments (enrollment_id,for_month,amount_paid,payment_date,payment_time,session_id,recorded_by,notes) VALUES (?,?,?,?,?,?,?,?)');
-    db.transaction(() => rows.forEach(row => insert.run(row.enrollment_id, month, row.amount, date, time, session_id || null, requireUser().user_id, String(notes || ''))))();
-    return true;
+    return recordPaymentReceipt(db, org(), rows.map(row => ({
+      enrollment_id: row.enrollment_id,
+      for_month: month,
+      amount: row.amount
+    })), {
+      date: today(),
+      time: new Date().toTimeString().slice(0, 8),
+      userId: requireUser().user_id,
+      sessionId: session_id || null,
+      notes: String(notes || '')
+    });
   });
   ipcMain.handle('students:payFees', (_event, items) => {
     if (!Array.isArray(items) || !items.length) throw new Error('Select at least one unpaid class month.');
@@ -690,10 +794,15 @@ function registerIpc() {
       if (item.month < row.enrolled_date.slice(0, 7)) throw new Error('Payment cannot be recorded before the student enrolled.');
       return { ...row, month: item.month };
     });
-    const insert = db.prepare('INSERT INTO payments (enrollment_id,for_month,amount_paid,payment_date,payment_time,recorded_by) VALUES (?,?,?,?,?,?)');
-    const date = today(), time = new Date().toTimeString().slice(0, 8), userId = requireUser().user_id;
-    db.transaction(() => rows.forEach(row => insert.run(row.enrollment_id, row.month, row.amount, date, time, userId)))();
-    return true;
+    return recordPaymentReceipt(db, org(), rows.map(row => ({
+      enrollment_id: row.enrollment_id,
+      for_month: row.month,
+      amount: row.amount
+    })), {
+      date: today(),
+      time: new Date().toTimeString().slice(0, 8),
+      userId: requireUser().user_id
+    });
   });
   ipcMain.handle('reports:classEarnings', (_event, month = currentMonth()) => {
     if (!validMonth(month)) throw new Error('Enter a valid month.');
