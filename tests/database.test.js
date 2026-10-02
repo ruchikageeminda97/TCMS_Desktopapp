@@ -10,7 +10,8 @@ const { buildAttendanceReportHtml } = require('../main/attendance-report');
 const { buildDailySummaryReportHtml } = require('../main/daily-summary-report');
 const { buildClassPaymentReportHtml } = require('../main/class-payment-report');
 const { openDatabase } = require('../main/database');
-const { recordPaymentReceipt } = require('../main/payment-receipt');
+const { recordPaymentReceipt, listRecentPaymentReceipts } = require('../main/payment-receipt');
+const { buildPaymentReceiptHtml } = require('../main/payment-receipt-report');
 const { completeOngoingSession, endExpiredSessions } = require('../main/session-lifecycle');
 
 function createDatabase() {
@@ -231,9 +232,50 @@ test('payment batches receive one unique 8-digit receipt and roll back atomicall
     ], { date: '2026-10-02', time: '09:31:00', userId: null }), /UNIQUE constraint failed/);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM payment_receipts').get().count, 1);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM payments').get().count, 2);
+    const recent = listRecentPaymentReceipts(db, organization);
+    assert.equal(recent.length, 1);
+    assert.equal(recent[0].receipt_code, first.receipt_code);
+    assert.equal(recent[0].class_count, 2);
+    assert.equal(recent[0].total, 1000);
+    assert.equal(recent[0].student_names, 'Jamie Student');
+    let latestReceipt;
+    for (let index = 0; index < 5; index += 1) {
+      latestReceipt = recordPaymentReceipt(db, organization, [{
+        enrollment_id: enrollment,
+        for_month: `2026-${String(index + 1).padStart(2, '0')}`,
+        amount: 500
+      }], {
+        date: `2026-10-${String(index + 3).padStart(2, '0')}`,
+        time: '10:00:00',
+        userId: null
+      });
+    }
+    const latestFour = listRecentPaymentReceipts(db, organization);
+    assert.equal(latestFour.length, 4);
+    assert.equal(latestFour[0].receipt_code, latestReceipt.receipt_code);
+    assert.equal(latestFour[0].total, 500);
   } finally {
     db.close();
   }
+});
+
+test('payment receipt report includes the receipt number, line items, and total safely', () => {
+  const html = buildPaymentReceiptHtml({
+    organization: 'Bright <Academy>',
+    receipt: { receipt_code: '00000042', payment_date: '2026-10-02', payment_time: '09:30:00' },
+    rows: [{
+      student_name: 'Jamie & Morgan',
+      class_name: 'Maths <A>',
+      for_month: '2026-09',
+      amount_paid: 500
+    }],
+    total: 500
+  });
+  assert.match(html, /00000042/);
+  assert.match(html, /Jamie &amp; Morgan/);
+  assert.match(html, /Maths &lt;A&gt;/);
+  assert.match(html, /Total paid/);
+  assert.match(html, />500\.00</);
 });
 
 test('tenant-scoped lookups cannot select another organization’s student', () => {

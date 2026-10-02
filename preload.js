@@ -37,7 +37,8 @@ contextBridge.exposeInMainWorld('tuition', Object.freeze({
   payments: {
     overview: invoke('payments:overview'), pay: invoke('payments:pay'),
     pendingFees: invoke('payments:pendingFees'), make: invoke('payments:make'),
-    receipt: invoke('payments:receipt')
+    receipt: invoke('payments:receipt'), exportReceipt: invoke('payments:exportReceipt'),
+    printReceipt: invoke('payments:printReceipt'), recentReceipts: invoke('payments:recentReceipts')
   },
   reports: {
     classEarnings: invoke('reports:classEarnings'),

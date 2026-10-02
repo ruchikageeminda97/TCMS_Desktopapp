@@ -16,4 +16,22 @@ function recordPaymentReceipt(db, oid, rows, { date, time, userId, sessionId = n
   return transaction();
 }
 
-module.exports = { recordPaymentReceipt };
+function listRecentPaymentReceipts(db, oid) {
+  return db.prepare(`SELECT r.receipt_id,r.receipt_code,r.payment_date,r.payment_time,
+      COUNT(p.payment_id) AS class_count,COALESCE(SUM(p.amount_paid),0) AS total,
+      GROUP_CONCAT(DISTINCT s.name) AS student_names
+    FROM payment_receipts r
+    JOIN payments p ON p.receipt_id=r.receipt_id
+    JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+    JOIN students s ON s.stid=e.stid
+    JOIN classes c ON c.class_id=e.class_id
+    WHERE r.oid=? AND c.oid=? AND s.oid=c.oid
+    GROUP BY r.receipt_id
+    ORDER BY r.payment_date DESC,r.payment_time DESC,r.receipt_id DESC
+    LIMIT 4`).all(oid, oid).map(receipt => ({
+      ...receipt,
+      total: Math.round((Number(receipt.total) + Number.EPSILON) * 100) / 100
+    }));
+}
+
+module.exports = { recordPaymentReceipt, listRecentPaymentReceipts };

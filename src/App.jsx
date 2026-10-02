@@ -17,11 +17,13 @@ import {
   CreditCard,
   Download,
   GraduationCap,
+  Eye,
   LayoutDashboard,
   LogOut,
   Menu,
   MoreHorizontal,
   Plus,
+  Printer,
   Search,
   Settings,
   ShieldCheck,
@@ -2333,7 +2335,7 @@ function PaymentsPage({ version, setModal, notify }) {
       ) : paymentTab === "teachers" ? (
         <TeacherPaymentsPanel version={version} setModal={setModal} notify={notify} />
       ) : (
-        <PaymentReceiptLookup />
+        <PaymentReceiptLookup version={version} notify={notify} setModal={setModal} />
       )}
     </div>
   );
@@ -2449,11 +2451,15 @@ function MakePaymentPanel({ version, students, setModal }) {
   );
 }
 
-function PaymentReceiptLookup() {
+function PaymentReceiptLookup({ version, notify, setModal }) {
   const [code, setCode] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const { data: recentReceipts, error: recentError } = useLoad(
+    () => api.payments.recentReceipts(),
+    [version],
+  );
   const lookup = async (event) => {
     event.preventDefault();
     setLoading(true);
@@ -2493,6 +2499,49 @@ function PaymentReceiptLookup() {
         </div>
       </form>
       {error && <div className="error-inline">{error}</div>}
+      <div className="payment-recent-receipts">
+        <div className="payment-recent-heading">
+          <div><h3>Recent payments</h3><p>Latest 4 receipts, summarized by total paid.</p></div>
+        </div>
+        {recentError && <div className="error-inline">{recentError}</div>}
+        {recentReceipts?.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>RECEIPT</th><th>STUDENT(S)</th><th>PAYMENT</th><th>PAID ON</th><th>CLASSES</th><th /></tr></thead>
+              <tbody>{recentReceipts.map((recent) => (
+                <tr key={recent.receipt_id}>
+                  <td><b className="receipt-code-inline">{recent.receipt_code}</b></td>
+                  <td>{recent.student_names}</td>
+                  <td><b>{money(recent.total)}</b></td>
+                  <td>{prettyDate(recent.payment_date)} · {recent.payment_time}</td>
+                  <td>{recent.class_count}</td>
+                  <td>
+                    <div className="payment-recent-actions">
+                      <Button kind="secondary" icon={Eye} onClick={async () => {
+                        setCode(recent.receipt_code);
+                        setError("");
+                        setLoading(true);
+                        try {
+                          const result = await api.payments.receipt(recent.receipt_code);
+                          if (!result) setError("No payment record was found for that receipt number.");
+                          else setModal({ type: "payment-receipt-detail", receipt: result });
+                        } catch (err) {
+                          setError(err.message);
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}>View</Button>
+                      <PaymentReceiptActions receiptCode={recent.receipt_code} notify={notify} />
+                    </div>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        ) : !recentError && (
+          <div className="payment-recent-empty">No payments have been recorded yet.</div>
+        )}
+      </div>
       {receipt && (
         <div className="payment-receipt-result">
           <div className="payment-receipt-summary">
@@ -2511,6 +2560,7 @@ function PaymentReceiptLookup() {
               ))}</tbody>
             </table>
           </div>
+          <PaymentReceiptActions receiptCode={receipt.receipt_code} notify={notify} />
         </div>
       )}
     </section>
@@ -3365,7 +3415,13 @@ function ModalHost({
       <BatchPaymentReview
         items={modal.items}
         close={close}
-        finish={finish}
+        refresh={refresh}
+        notify={notify}
+      />
+    ) : modal.type === "payment-receipt-detail" ? (
+      <PaymentReceiptDetail
+        receipt={modal.receipt}
+        close={close}
         notify={notify}
       />
     ) : modal.type === "student-fee-review" ? (
@@ -3401,7 +3457,7 @@ function ModalHost({
       }}
     >
       <div
-        className={`modal-window ${modal.type === "session" ? "session-modal-window" : ""} ${modal.type === "class-detail" ? "class-detail-window" : ""} ${modal.type === "class-form" ? "class-form-window" : ""} ${["session", "class-detail", "class-form", "enrollment-form"].includes(modal.type) ? "modal-window-wide" : ""}`}
+        className={`modal-window ${modal.type === "session" ? "session-modal-window" : ""} ${modal.type === "class-detail" ? "class-detail-window" : ""} ${modal.type === "class-form" ? "class-form-window" : ""} ${modal.type === "payment-receipt-detail" ? "payment-window" : ""} ${["session", "class-detail", "class-form", "enrollment-form"].includes(modal.type) ? "modal-window-wide" : ""}`}
         role="dialog"
         aria-modal="true"
       >
@@ -3513,20 +3569,22 @@ function PaymentReview({ rows, month, sessionId, onComplete, close, finish, noti
   );
 }
 
-function BatchPaymentReview({ items, close, finish, notify }) {
+function BatchPaymentReview({ items, close, refresh, notify }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [receipt, setReceipt] = useState(null);
   const total = items.reduce((sum, item) => sum + Number(item.due_amount || 0), 0);
   const confirm = async () => {
     setSaving(true);
     setError("");
     try {
-      const receipt = await api.payments.make(items.map((item) => ({
+      const savedReceipt = await api.payments.make(items.map((item) => ({
         enrollment_id: item.enrollment_id,
         for_month: item.for_month,
       })));
-      notify(`Payment recorded. Receipt number: ${receipt.receipt_code}`);
-      finish();
+      setReceipt(savedReceipt);
+      refresh();
+      notify(`Payment recorded. Receipt number: ${savedReceipt.receipt_code}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -3536,28 +3594,138 @@ function BatchPaymentReview({ items, close, finish, notify }) {
   return (
     <>
       <ModalTitle
-        eyebrow="PAYMENT CONFIRMATION"
-        title="Make payment"
-        description={`Confirm ${items.length} selected pending payment${items.length === 1 ? "" : "s"}. A unique receipt number will be created.`}
+        eyebrow={receipt ? "PAYMENT RECORDED" : "PAYMENT CONFIRMATION"}
+        title={receipt ? "Payment receipt" : "Make payment"}
+        description={receipt
+          ? `Payment recorded on ${receipt.payment_date} at ${receipt.payment_time}.`
+          : `Confirm ${items.length} selected pending payment${items.length === 1 ? "" : "s"}. A unique receipt number will be created.`}
         close={close}
       />
       <div className="payment-review-content">
-        <div className="payment-review-list">
-          {items.map((item) => (
-            <div className="payment-review-row" key={`${item.enrollment_id}-${item.for_month}`}>
-              <div><b>{item.name} · {item.class_name}</b><span>{item.for_month}</span></div>
-              <b>{money(item.due_amount)}</b>
+        {receipt ? (
+          <div className="payment-receipt-success">
+            <div className="payment-receipt-code">
+              <span>Receipt / barcode number</span>
+              <b>{receipt.receipt_code}</b>
             </div>
-          ))}
-        </div>
-        <div className="payment-review-total"><span>Total amount to pay</span><b>{money(total)}</b></div>
+            <div className="payment-review-list">
+              {receipt.rows.map((row) => (
+                <div className="payment-review-row" key={row.payment_id}>
+                  <div><b>{row.student_name} · {row.class_name}</b><span>{row.for_month}</span></div>
+                  <b>{money(row.amount_paid)}</b>
+                </div>
+              ))}
+            </div>
+            <div className="payment-review-total"><span>Total paid</span><b>{money(receipt.total)}</b></div>
+            <PaymentReceiptActions receiptCode={receipt.receipt_code} notify={notify} />
+          </div>
+        ) : (
+          <>
+            <div className="payment-review-list">
+              {items.map((item) => (
+                <div className="payment-review-row" key={`${item.enrollment_id}-${item.for_month}`}>
+                  <div><b>{item.name} · {item.class_name}</b><span>{item.for_month}</span></div>
+                  <b>{money(item.due_amount)}</b>
+                </div>
+              ))}
+            </div>
+            <div className="payment-review-total"><span>Total amount to pay</span><b>{money(total)}</b></div>
+          </>
+        )}
         {error && <div className="form-error">{error}</div>}
         <div className="modal-actions">
-          <Button kind="secondary" onClick={close} disabled={saving}>Cancel</Button>
-          <Button onClick={confirm} disabled={saving}>
-            {saving ? "Recording…" : "Confirm payment"}
-            <Check size={15} />
-          </Button>
+          {receipt ? (
+            <Button onClick={close}>Done</Button>
+          ) : (
+            <>
+              <Button kind="secondary" onClick={close} disabled={saving}>Cancel</Button>
+              <Button onClick={confirm} disabled={saving}>
+                {saving ? "Recording…" : "Confirm payment"}
+                <Check size={15} />
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function PaymentReceiptActions({ receiptCode, notify }) {
+  const [busy, setBusy] = useState("");
+  const download = async () => {
+    setBusy("download");
+    try {
+      const result = await api.payments.exportReceipt(receiptCode);
+      if (!result.canceled) notify("Payment receipt downloaded as a PDF.");
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy("");
+    }
+  };
+  const print = async () => {
+    setBusy("print");
+    try {
+      await api.payments.printReceipt(receiptCode);
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <div className="payment-receipt-actions">
+      <Button className="payment-receipt-print-button" icon={Printer} onClick={print} disabled={Boolean(busy)}>
+        {busy === "print" ? "Opening print dialog…" : "Print receipt"}
+      </Button>
+      <Button className="payment-receipt-download-button" icon={Download} onClick={download} disabled={Boolean(busy)}>
+        {busy === "download" ? "Preparing PDF…" : "Download receipt"}
+      </Button>
+    </div>
+  );
+}
+
+function PaymentReceiptDetail({ receipt, close, notify }) {
+  return (
+    <>
+      <ModalTitle
+        eyebrow="PAYMENT RECEIPT"
+        title="Receipt details"
+        description={`Paid on ${prettyDate(receipt.payment_date)} at ${receipt.payment_time}`}
+        close={close}
+        className="payment-receipt-modal-title"
+      />
+      <div className="payment-receipt-modal-content">
+        <div className="payment-receipt-modal-banner">
+          <span>Receipt / barcode number</span>
+          <b>{receipt.receipt_code}</b>
+          <small>Keep this number to look up this payment again.</small>
+        </div>
+        <div className="payment-receipt-modal-stats">
+          <div><span>Total paid</span><b>{money(receipt.total)}</b></div>
+          <div><span>Class fees</span><b>{receipt.rows.length}</b></div>
+          <div><span>Students</span><b>{new Set(receipt.rows.map((row) => row.stid)).size}</b></div>
+        </div>
+        <div className="payment-receipt-modal-list">
+          <div className="payment-receipt-modal-list-heading">
+            <h3>Payment details</h3><span>{receipt.rows.length} item{receipt.rows.length === 1 ? "" : "s"}</span>
+          </div>
+          {receipt.rows.map((row, index) => (
+            <div className="payment-receipt-modal-row" key={row.payment_id}>
+              <span className="payment-receipt-row-number">{String(index + 1).padStart(2, "0")}</span>
+              <div className="payment-receipt-row-copy">
+                <b>{row.student_name}</b>
+                <span>{row.class_name} · {row.for_month}{row.rfid ? ` · RFID ${row.rfid}` : ""}</span>
+              </div>
+              <b className="payment-receipt-row-amount">{money(row.amount_paid)}</b>
+            </div>
+          ))}
+          <div className="payment-receipt-modal-total"><span>Total paid</span><b>{money(receipt.total)}</b></div>
+        </div>
+        <PaymentReceiptActions receiptCode={receipt.receipt_code} notify={notify} />
+        <div className="payment-receipt-modal-done">
+          <Button kind="secondary" onClick={close}>Close</Button>
         </div>
       </div>
     </>

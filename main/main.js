@@ -10,7 +10,8 @@ const { buildDailySummaryReportHtml } = require('./daily-summary-report');
 const { buildClassPaymentReportHtml } = require('./class-payment-report');
 const { createTemplateBuffer, parseExcelRecords } = require('./record-import');
 const { completeOngoingSession, endExpiredSessions } = require('./session-lifecycle');
-const { recordPaymentReceipt } = require('./payment-receipt');
+const { recordPaymentReceipt, listRecentPaymentReceipts } = require('./payment-receipt');
+const { buildPaymentReceiptHtml } = require('./payment-receipt-report');
 
 let window;
 let activeUser = null;
@@ -44,6 +45,42 @@ const requireUser = () => {
   return activeUser;
 };
 const org = () => requireUser().oid;
+
+function findPaymentReceipt(receiptCode) {
+  if (!/^\d{8}$/.test(receiptCode)) throw new Error('Enter an 8-digit payment receipt number.');
+  const db = getDatabase();
+  const receipt = db.prepare(`SELECT receipt_id,receipt_code,payment_date,payment_time
+    FROM payment_receipts WHERE oid=? AND receipt_code=?`).get(org(), receiptCode);
+  if (!receipt) return null;
+  const rows = db.prepare(`SELECT p.payment_id,p.for_month,p.amount_paid,s.stid,s.name AS student_name,
+      s.rfid,c.class_name
+    FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
+    JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
+    WHERE p.receipt_id=? AND c.oid=? AND s.oid=c.oid
+    ORDER BY p.for_month,s.name COLLATE NOCASE,c.class_name COLLATE NOCASE`).all(receipt.receipt_id, org());
+  return { ...receipt, rows, total: money(rows.reduce((sum, row) => sum + Number(row.amount_paid), 0)) };
+}
+
+async function createPaymentReceiptWindow(user, receipt) {
+  const reportWindow = new BrowserWindow({
+    show: false,
+    parent: window,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+  });
+  try {
+    const html = buildPaymentReceiptHtml({
+      organization: user.organization,
+      receipt,
+      rows: receipt.rows,
+      total: receipt.total
+    });
+    await reportWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+    return reportWindow;
+  } catch (error) {
+    if (!reportWindow.isDestroyed()) reportWindow.close();
+    throw error;
+  }
+}
 
 function createWindow() {
   window = new BrowserWindow({
@@ -725,7 +762,7 @@ function registerIpc() {
       }
       return { ...row, for_month: item.for_month };
     });
-    return recordPaymentReceipt(db, org(), rows.map(row => ({
+    const savedReceipt = recordPaymentReceipt(db, org(), rows.map(row => ({
       enrollment_id: row.enrollment_id,
       for_month: row.for_month,
       amount: row.amount
@@ -734,21 +771,53 @@ function registerIpc() {
       time: new Date().toTimeString().slice(0, 8),
       userId: requireUser().user_id
     });
+    return findPaymentReceipt(savedReceipt.receipt_code);
   });
   ipcMain.handle('payments:receipt', (_event, code) => {
     const receiptCode = String(code || '').trim().toUpperCase();
-    if (!/^\d{8}$/.test(receiptCode)) throw new Error('Enter an 8-digit payment receipt number.');
-    const db = getDatabase();
-    const receipt = db.prepare(`SELECT receipt_id,receipt_code,payment_date,payment_time
-      FROM payment_receipts WHERE oid=? AND receipt_code=?`).get(org(), receiptCode);
-    if (!receipt) return null;
-    const rows = db.prepare(`SELECT p.payment_id,p.for_month,p.amount_paid,s.stid,s.name AS student_name,
-        s.rfid,c.class_name
-      FROM payments p JOIN class_enrollments e ON e.enrollment_id=p.enrollment_id
-      JOIN students s ON s.stid=e.stid JOIN classes c ON c.class_id=e.class_id
-      WHERE p.receipt_id=? AND c.oid=? AND s.oid=c.oid
-      ORDER BY p.for_month,s.name COLLATE NOCASE,c.class_name COLLATE NOCASE`).all(receipt.receipt_id, org());
-    return { ...receipt, rows, total: money(rows.reduce((sum, row) => sum + Number(row.amount_paid), 0)) };
+    return findPaymentReceipt(receiptCode);
+  });
+  ipcMain.handle('payments:recentReceipts', () => {
+    return listRecentPaymentReceipts(getDatabase(), org());
+  });
+  ipcMain.handle('payments:exportReceipt', async (_event, code) => {
+    const user = requireUser();
+    const receipt = findPaymentReceipt(String(code || '').trim().toUpperCase());
+    if (!receipt) throw new Error('Payment receipt was not found.');
+    const choice = await dialog.showSaveDialog(window, {
+      title: 'Download payment receipt',
+      defaultPath: `payment_receipt_${receipt.receipt_code}.pdf`,
+      filters: [{ name: 'PDF document', extensions: ['pdf'] }]
+    });
+    if (choice.canceled || !choice.filePath) return { canceled: true };
+    const filePath = choice.filePath.toLowerCase().endsWith('.pdf') ? choice.filePath : `${choice.filePath}.pdf`;
+    const reportWindow = await createPaymentReceiptWindow(user, receipt);
+    try {
+      const pdf = await reportWindow.webContents.printToPDF({
+        pageSize: 'A4',
+        printBackground: true,
+        preferCSSPageSize: true,
+        margins: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 }
+      });
+      await fs.promises.writeFile(filePath, pdf);
+    } finally {
+      if (!reportWindow.isDestroyed()) reportWindow.close();
+    }
+    return { canceled: false, filePath };
+  });
+  ipcMain.handle('payments:printReceipt', async (_event, code) => {
+    const user = requireUser();
+    const receipt = findPaymentReceipt(String(code || '').trim().toUpperCase());
+    if (!receipt) throw new Error('Payment receipt was not found.');
+    const reportWindow = await createPaymentReceiptWindow(user, receipt);
+    reportWindow.show();
+    return new Promise((resolve, reject) => {
+      reportWindow.webContents.print({ printBackground: true }, (success, failureReason) => {
+        if (!reportWindow.isDestroyed()) reportWindow.close();
+        if (!success) reject(new Error(failureReason || 'The receipt could not be printed.'));
+        else resolve(true);
+      });
+    });
   });
   ipcMain.handle('payments:pay', (_event, { enrollment_ids, month, session_id, notes }) => {
     if (!validMonth(month) || month > currentMonth()) throw new Error('Choose a payment month up to the current month.');

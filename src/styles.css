@@ -697,6 +697,75 @@ input[type=checkbox]{width:14px;height:14px;accent-color:#7158d8;vertical-align:
 .payment-receipt-summary span{color:#737c8a;font-size:11px}
 .payment-receipt-summary b{color:#333b49;font-size:14px}
 .payment-receipt-result .table-wrap{margin:0 18px 18px}
+.payment-receipt-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;padding:0 18px 16px}
+.payment-recent-receipts{padding:0 18px 18px}
+.payment-recent-heading{padding:12px 0;border-top:1px solid #eff0f3}
+.payment-recent-heading h3{margin:0 0 4px;color:#343b49;font-size:15px}
+.payment-recent-heading p{margin:0;color:#737c8a;font-size:12px}
+.payment-recent-receipts .table-wrap{overflow-x:auto}
+.payment-recent-receipts table{min-width:760px}
+.receipt-code-inline{font-family:Consolas,monospace;letter-spacing:1px}
+.payment-recent-actions{display:flex;justify-content:flex-end;align-items:center;gap:5px;white-space:nowrap}
+.payment-recent-actions>.payment-receipt-actions{padding:0;flex-wrap:nowrap}
+.payment-recent-actions .button{height:34px;padding:0 9px;font-size:12px}
+.payment-recent-empty{padding:16px;text-align:center;color:#737c8a;font-size:13px}
+.payment-review-content>.payment-receipt-actions{padding:10px 0 0}
+.payment-receipt-success{border:1px solid #e6e1f8;border-radius:9px;background:#fcfbff;padding:13px}
+.payment-receipt-code{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid #ded8f5;border-radius:7px;background:#f3f0ff}
+.payment-receipt-code span{color:#62578f;font-size:12px;font-weight:650}
+.payment-receipt-code b{font-family:Consolas,monospace;color:#372a80;font-size:22px;letter-spacing:3px}
+.payment-receipt-success .payment-review-list{max-height:220px;margin-top:8px}
+.payment-receipt-modal-title{background:linear-gradient(120deg,#5537ad,#7956df 58%,#4778dc);border:0}
+.payment-receipt-modal-title .eyebrow,.payment-receipt-modal-title h2,.payment-receipt-modal-title p{color:#fff}
+.payment-receipt-modal-title .eyebrow{opacity:.78}
+.payment-receipt-modal-title p{opacity:.82}
+.payment-receipt-modal-title .modal-close{color:#fff;background:#ffffff20}
+.payment-window{width:min(94vw,700px)}
+.payment-receipt-modal-content{padding:18px 20px 20px;background:linear-gradient(180deg,#f7f5ff 0,#fff 210px)}
+.payment-receipt-modal-banner{display:flex;align-items:center;flex-direction:column;gap:7px;padding:17px;border:1px solid #ded5ff;border-radius:11px;background:linear-gradient(120deg,#eee8ff,#e7f4ff);text-align:center}
+.payment-receipt-modal-banner>span{color:#5e4aa6;font-size:11px;font-weight:800;letter-spacing:.7px;text-transform:uppercase}
+.payment-receipt-modal-banner>b{color:#352274;font-family:Consolas,monospace;font-size:28px;letter-spacing:5px}
+.payment-receipt-modal-banner>small{color:#71698b;font-size:11px}
+.payment-receipt-modal-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:12px 0}
+.payment-receipt-modal-stats>div{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #e7e8f2;border-radius:9px;background:#fff;box-shadow:0 3px 10px #34305a0b}
+.payment-receipt-modal-stats>div:first-child{border-color:#ccebdc;background:#f1fbf6}
+.payment-receipt-modal-stats>div:nth-child(2){border-color:#f4e0b9;background:#fff9ed}
+.payment-receipt-modal-stats>div:nth-child(3){border-color:#d9e5fb;background:#f3f7ff}
+.payment-receipt-modal-stats span{color:#747b8b;font-size:11px}
+.payment-receipt-modal-stats b{color:#303747;font-size:17px}
+.payment-receipt-modal-list{overflow:hidden;border:1px solid #e6e8ef;border-radius:10px;background:#fff}
+.payment-receipt-modal-list-heading{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #ebeaf3;background:#faf9ff}
+.payment-receipt-modal-list-heading h3{margin:0;color:#38334f;font-size:14px}
+.payment-receipt-modal-list-heading span{color:#736c89;font-size:11px}
+.payment-receipt-modal-row{display:flex;align-items:center;gap:11px;padding:11px 13px;border-bottom:1px solid #f0f1f5}
+.payment-receipt-row-number{width:29px;height:29px;display:grid;place-items:center;flex:none;border-radius:8px;background:#f0ecff;color:#614ac1;font-size:11px;font-weight:800}
+.payment-receipt-row-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:4px}
+.payment-receipt-row-copy b{overflow:hidden;color:#303747;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
+.payment-receipt-row-copy span{overflow:hidden;color:#727a8a;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.payment-receipt-row-amount{color:#267a55;font-size:13px;white-space:nowrap}
+.payment-receipt-modal-total{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:linear-gradient(90deg,#ecf9f1,#edf5ff);color:#394357;font-size:13px;font-weight:700}
+.payment-receipt-modal-total b{color:#176b48;font-size:19px}
+.payment-receipt-modal-content>.payment-receipt-actions{justify-content:center;padding:15px 0 8px}
+.payment-receipt-actions .payment-receipt-print-button,.payment-receipt-actions .payment-receipt-download-button{height:36px;padding:0 13px;border:1px solid transparent;border-radius:7px;color:#fff;font-size:12px;font-weight:700;box-shadow:none;display:inline-flex;align-items:center;justify-content:center;gap:3px;white-space:nowrap;transition:background .16s,border-color .16s}
+.payment-receipt-actions .payment-receipt-print-button{border-color:#a86f0d;background:#a86f0d;color:#fff}
+.payment-receipt-actions .payment-receipt-print-button:hover{border-color:#875608;background:#875608;color:#fff}
+.payment-receipt-actions .payment-receipt-download-button{border-color:#244b9a;background:#244b9a;color:#fff}
+.payment-receipt-actions .payment-receipt-download-button:hover{border-color:#1b3979;background:#1b3979;color:#fff}
+.payment-receipt-modal-done{display:flex;justify-content:flex-end}
+@media(max-width:520px){
+  .payment-receipt-actions{justify-content:stretch;flex-direction:column}
+  .payment-receipt-actions .button{width:100%}
+  .payment-receipt-code{align-items:flex-start;flex-direction:column}
+  .payment-recent-actions{justify-content:flex-start}
+  .payment-recent-actions>.payment-receipt-actions{flex-direction:row}
+  .payment-recent-actions .button{width:auto}
+  .payment-receipt-modal-content{padding:13px}
+  .payment-receipt-modal-stats{gap:5px}
+  .payment-receipt-modal-stats>div{padding:9px 7px}
+  .payment-receipt-modal-stats b{font-size:14px}
+  .payment-receipt-modal-banner>b{font-size:23px}
+  .payment-receipt-modal-content>.payment-receipt-actions{flex-direction:row}
+}
 @media(max-width:520px){
   .make-payment-fees{grid-template-columns:1fr;max-height:352px}
   .make-payment-footer{align-items:stretch;flex-direction:column}

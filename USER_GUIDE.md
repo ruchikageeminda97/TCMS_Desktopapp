@@ -149,8 +149,9 @@ The Payments page has **Make payment**, **Student payments**, **Teacher payments
 2. Select one or more students. Their unpaid monthly class fees appear automatically, with earlier months first; previous months are highlighted in red.
 3. All displayed fees are selected by default. Deselect any fee that should not be included, then review the total at the bottom.
 4. Select **Make payment** and confirm the listed fees. A unique 8-digit receipt number is created for the batch.
-5. Use **Payment records** to enter or scan the receipt number and verify the date, time, student, class, month, and amount.
-6. A 100%-discount enrolment has no amount due and is not offered as a payable item.
+5. After recording, choose **Print receipt** to print it or **Download receipt** to save a PDF. The receipt includes its number, payment date and time, student and class names, paid months, per-item amounts, and total paid.
+6. **Payment records** shows the latest four receipts with student name(s), total paid, and number of class-fee records. Use **View** for the class-by-class receipt, or print/download the PDF directly from the list. You can also enter or scan a receipt number to find any receipt.
+7. A 100%-discount enrolment has no amount due and is not offered as a payable item.
 
 Student tuition can also be marked paid from an active attendance register or the existing **Student payments** tab. These payment flows also create a receipt number, and duplicate class/month payments remain blocked.
 
