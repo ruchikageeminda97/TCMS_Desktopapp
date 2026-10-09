@@ -106,6 +106,57 @@ const money = (amount) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number(amount || 0));
+const CODE39_PATTERNS = {
+  "0": "nnnwwnwnn",
+  "1": "wnnwnnnnw",
+  "2": "nnwwnnnnw",
+  "3": "wnwwnnnnn",
+  "4": "nnnwwnnnw",
+  "5": "wnnwwnnnn",
+  "6": "nnwwwnnnn",
+  "7": "nnnwnnwnw",
+  "8": "wnnwnnwnn",
+  "9": "nnwwnnwnn",
+  "*": "nwnnwnwnn",
+};
+const code39BarcodeWidth = (value) =>
+  [...`*${value}*`].reduce(
+    (width, character) =>
+      width + [...CODE39_PATTERNS[character]].reduce(
+        (sum, unit) => sum + (unit === "w" ? 3 : 1),
+        0,
+      ) + 1,
+    -1,
+  );
+function Code39Barcode({ value, className = "" }) {
+  const width = code39BarcodeWidth(value);
+  let cursor = 0;
+  const bars = [...`*${value}*`].flatMap((character, characterIndex) => {
+    const runs = [...CODE39_PATTERNS[character]];
+    const elements = runs.map((unit, index) => {
+      const runWidth = unit === "w" ? 3 : 1;
+      const x = cursor;
+      cursor += runWidth;
+      return index % 2 === 0
+        ? <rect key={`${characterIndex}-${index}`} x={x} y="0" width={runWidth} height="44" />
+        : null;
+    });
+    if (characterIndex < value.length + 1) cursor += 1;
+    return elements;
+  });
+  return (
+    <svg
+      className={`code39-barcode ${className}`}
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox={`0 0 ${width} 44`}
+      role="img"
+      aria-label={`Code 39 barcode for receipt ${value}`}
+      shapeRendering="crispEdges"
+    >
+      {bars}
+    </svg>
+  );
+}
 const roundMoney = (amount) =>
   Math.round((Number(amount) + Number.EPSILON) * 100) / 100;
 const prettyDate = (date) =>
@@ -3604,9 +3655,11 @@ function BatchPaymentReview({ items, close, refresh, notify }) {
       <div className="payment-review-content">
         {receipt ? (
           <div className="payment-receipt-success">
-            <div className="payment-receipt-code">
-              <span>Receipt / barcode number</span>
-              <b>{receipt.receipt_code}</b>
+            <div className="payment-receipt-code-block">
+              <div className="payment-receipt-code-copy">
+                <b>{receipt.receipt_code}</b>
+                <Code39Barcode value={receipt.receipt_code} />
+              </div>
             </div>
             <div className="payment-review-list">
               {receipt.rows.map((row) => (
@@ -3698,9 +3751,14 @@ function PaymentReceiptDetail({ receipt, close, notify }) {
       />
       <div className="payment-receipt-modal-content">
         <div className="payment-receipt-modal-banner">
-          <span>Receipt / barcode number</span>
-          <b>{receipt.receipt_code}</b>
-          <small>Keep this number to look up this payment again.</small>
+          <div className="payment-receipt-modal-copy">
+            <span>Payment details</span>
+            <small>Paid {prettyDate(receipt.payment_date)} · {receipt.payment_time}</small>
+          </div>
+          <div className="payment-receipt-modal-barcode">
+            <b>{receipt.receipt_code}</b>
+            <Code39Barcode value={receipt.receipt_code} />
+          </div>
         </div>
         <div className="payment-receipt-modal-stats">
           <div><span>Total paid</span><b>{money(receipt.total)}</b></div>

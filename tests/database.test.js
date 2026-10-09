@@ -11,7 +11,7 @@ const { buildDailySummaryReportHtml } = require('../main/daily-summary-report');
 const { buildClassPaymentReportHtml } = require('../main/class-payment-report');
 const { openDatabase } = require('../main/database');
 const { recordPaymentReceipt, listRecentPaymentReceipts } = require('../main/payment-receipt');
-const { buildPaymentReceiptHtml } = require('../main/payment-receipt-report');
+const { buildPaymentReceiptHtml, buildCode39Svg } = require('../main/payment-receipt-report');
 const { completeOngoingSession, endExpiredSessions } = require('../main/session-lifecycle');
 
 function createDatabase() {
@@ -260,6 +260,10 @@ test('payment batches receive one unique 8-digit receipt and roll back atomicall
 });
 
 test('payment receipt report includes the receipt number, line items, and total safely', () => {
+  const barcode = buildCode39Svg('00000042');
+  assert.match(barcode, /<svg/);
+  assert.match(barcode, /<rect/);
+  assert.match(barcode, /aria-label="Code 39 barcode for receipt 00000042"/);
   const html = buildPaymentReceiptHtml({
     organization: 'Bright <Academy>',
     receipt: { receipt_code: '00000042', payment_date: '2026-10-02', payment_time: '09:30:00' },
@@ -272,6 +276,9 @@ test('payment receipt report includes the receipt number, line items, and total 
     total: 500
   });
   assert.match(html, /00000042/);
+  assert.match(html, /class="receipt-barcode"/);
+  assert.doesNotMatch(html, /Receipt \/ barcode number/);
+  assert.match(html, /height:9mm/);
   assert.match(html, /Jamie &amp; Morgan/);
   assert.match(html, /Maths &lt;A&gt;/);
   assert.match(html, /Total paid/);
